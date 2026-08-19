@@ -6,6 +6,7 @@
 #include <wincred.h>
 #define SECURITY_WIN32
 #include <security.h>
+#include <ntsecapi.h>
 
 // {64D6E84B-4969-4B59-A11A-58C3D9FA0110}
 const CLSID CLSID_FaceUnlockProvider = {0x64d6e84b, 0x4969, 0x4b59, {0xa1, 0x1a, 0x58, 0xc3, 0xd9, 0xfa, 0x01, 0x10}};
@@ -65,7 +66,6 @@ class FaceUnlockCredential final : public ICredentialProviderCredential {
 
 public:
     FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) : usage_(cpus) {
-        // Pre-fill username if available in environment
         DWORD userLen = ARRAYSIZE(username_);
         GetUserNameW(username_, &userLen);
     }
@@ -333,9 +333,19 @@ public:
         DWORD authPackage = 0;
         ULONG cbBuffer = 0;
 
-        // Retrieve Negotiate authentication package ID
+        // Retrieve Negotiate authentication package ID via LSA
         HANDLE hLsa = nullptr;
-        NTSTATUS status = LsaConnectUntrusted(&hLsa);
+        LSA_STRING lsaProcessName;
+        lsaProcessName.Buffer = const_cast<PCHAR>("FaceUnlockProvider");
+        lsaProcessName.Length = static_cast<USHORT>(strlen("FaceUnlockProvider"));
+        lsaProcessName.MaximumLength = lsaProcessName.Length + 1;
+
+        LSA_OPERATIONAL_MODE mode = 0;
+        NTSTATUS status = LsaRegisterLogonProcess(&lsaProcessName, &hLsa, &mode);
+        if (status != 0 || hLsa == nullptr) {
+            status = LsaConnectUntrusted(&hLsa);
+        }
+
         if (status == 0 && hLsa != nullptr) {
             LSA_STRING pkgName;
             pkgName.Buffer = const_cast<PCHAR>(NEGOSSP_NAME_A);
