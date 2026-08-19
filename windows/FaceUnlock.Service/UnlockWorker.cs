@@ -12,7 +12,7 @@ namespace FaceUnlock.Service;
 
 public sealed class UnlockWorker : BackgroundService
 {
-    private const string PipeName = "FaceUnlock.Auth.v1";
+    private readonly string _pipeName;
     private const string ServiceVersion = "1.1.0";
     private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
 
@@ -32,9 +32,15 @@ public sealed class UnlockWorker : BackgroundService
 
     private enum GrantState
     {
+        Pending,
         Approved,
         Reserved,
-        Consumed
+        Consumed,
+        Rejected,
+        Timeout,
+        Cancelled,
+        NotPaired,
+        Error
     }
 
     private sealed class AuthGrant
@@ -43,14 +49,16 @@ public sealed class UnlockWorker : BackgroundService
         public required DateTimeOffset ApprovedAt { get; init; }
         public required long ExpiresAt { get; init; }
         public GrantState State { get; set; } = GrantState.Approved;
+        public string? LastMessage { get; set; }
     }
 
     // In-memory grant cache: requestId -> AuthGrant
     private readonly Dictionary<string, AuthGrant> _activeGrants = new();
 
-    public UnlockWorker(ILogger<UnlockWorker> log)
+    public UnlockWorker(ILogger<UnlockWorker> log, string pipeName = "FaceUnlock.Auth.v1")
     {
         _log = log;
+        _pipeName = pipeName;
         _configStore = new ConfigStore();
         _keyStore = new KeyStore();
         _bleScanner = new BleScanner();
@@ -112,11 +120,12 @@ public sealed class UnlockWorker : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            NamedPipeServerStream? pipe = null;
             try
             {
                 var pipeSecurity = CreatePipeSecurity();
-                using var pipe = NamedPipeServerStreamAcl.Create(
-                    PipeName,
+                pipe = NamedPipeServerStreamAcl.Create(
+                    _pipeName,
                     PipeDirection.InOut,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,
@@ -128,18 +137,22 @@ public sealed class UnlockWorker : BackgroundService
 
                 await pipe.WaitForConnectionAsync(stoppingToken);
 
-                // Handle the client request asynchronously
-                _ = HandleClientConnectionAsync(pipe, stoppingToken);
+                // Pass ownership of pipe directly into the worker task
+                var clientPipe = pipe;
+                pipe = null; // Do not dispose here
+                _ = Task.Run(() => HandleClientConnectionAsync(clientPipe, stoppingToken), stoppingToken);
             }
             catch (OperationCanceledException)
             {
+                pipe?.Dispose();
                 break;
             }
             catch (Exception ex)
             {
+                pipe?.Dispose();
                 _log.LogError(ex, "Named pipe server error");
                 AppendServiceLog($"Named pipe listener exception: {ex.Message}");
-                await Task.Delay(500, stoppingToken);
+                await Task.Delay(200, stoppingToken);
             }
         }
 
@@ -172,11 +185,18 @@ public sealed class UnlockWorker : BackgroundService
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, true);
             using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, true) { AutoFlush = true };
 
+            string opName = "READ";
+            string? currentReqId = null;
+
             try
             {
+                AppendServiceLog("[PIPE CONNECTED]");
+
+                opName = "READ";
                 var line = await reader.ReadLineAsync(stoppingToken);
                 if (string.IsNullOrWhiteSpace(line))
                 {
+                    opName = "WRITE_EMPTY";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Empty request payload")));
                     return;
                 }
@@ -189,27 +209,35 @@ public sealed class UnlockWorker : BackgroundService
                 catch (Exception ex)
                 {
                     _log.LogWarning("Malformed IPC JSON: {Error}", ex.Message);
-                    AppendServiceLog($"Malformed IPC JSON received: {ex.Message}");
+                    AppendServiceLog($"[MALFORMED_JSON] {ex.Message}");
+                    opName = "WRITE_MALFORMED";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Malformed JSON request")));
                     return;
                 }
 
                 if (request == null)
                 {
+                    opName = "WRITE_INVALID";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Invalid request structure")));
                     return;
                 }
+
+                currentReqId = request.request_id;
+                AppendServiceLog($"[REQUEST RECEIVED] command={request.command} request_id={currentReqId ?? "(none)"} user_sid={request.user_sid ?? "(none)"} qualified_username={request.qualified_username ?? request.username ?? "(none)"}");
 
                 // Handle ping command (health check)
                 if (request.command == "ping")
                 {
                     var reqId = string.IsNullOrWhiteSpace(request.request_id) ? Guid.NewGuid().ToString("N") : request.request_id;
+                    opName = "WRITE_PING";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, reqId, LocalAuthStatus.Ok, "FaceUnlock Service is healthy", null, ServiceVersion), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] ping request_id={reqId}");
                     return;
                 }
 
                 if (string.IsNullOrWhiteSpace(request.request_id))
                 {
+                    opName = "WRITE_MISSING_REQ_ID";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Missing request_id")));
                     return;
                 }
@@ -218,7 +246,9 @@ public sealed class UnlockWorker : BackgroundService
                 if (request.command == "cancel_request")
                 {
                     var cancelResp = CancelRequest(request.request_id);
+                    opName = "WRITE_CANCEL";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(cancelResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] cancel_request request_id={request.request_id}");
                     return;
                 }
 
@@ -226,39 +256,50 @@ public sealed class UnlockWorker : BackgroundService
                 if (request.command == "reserve_grant")
                 {
                     var reserveResp = ReserveGrant(request.request_id);
+                    opName = "WRITE_RESERVE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(reserveResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] reserve_grant request_id={request.request_id}");
                     return;
                 }
 
                 if (request.command == "release_grant")
                 {
                     var releaseResp = ReleaseGrant(request.request_id);
+                    opName = "WRITE_RELEASE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(releaseResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] release_grant request_id={request.request_id}");
                     return;
                 }
 
                 if (request.command == "consume_grant")
                 {
                     var consumeResp = ConsumeGrant(request.request_id);
+                    opName = "WRITE_CONSUME";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] consume_grant request_id={request.request_id}");
                     return;
                 }
 
                 if (request.command == "grant_status")
                 {
                     var statusResp = GetGrantStatus(request.request_id);
+                    opName = "WRITE_GRANT_STATUS";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(statusResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     return;
                 }
 
-                if (request.command != "request_unlock")
+                if (request.command == "request_unlock")
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, request.request_id, LocalAuthStatus.Error, $"Unsupported command: {request.command}")));
+                    // Start auth in background task (or queue) and respond with ACK immediately
+                    var ackResp = StartAuthRequest(request, stoppingToken);
+                    opName = "WRITE_REQUEST_UNLOCK_ACK";
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(ackResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] request_unlock request_id={request.request_id} status={ackResp.status}");
                     return;
                 }
 
-                var response = await ProcessAuthRequestAsync(request, writer, stoppingToken);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(response, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                opName = "WRITE_UNSUPPORTED";
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, request.request_id, LocalAuthStatus.Error, $"Unsupported command: {request.command}")));
             }
             catch (OperationCanceledException)
             {
@@ -266,16 +307,27 @@ public sealed class UnlockWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Exception handling client connection");
-                AppendServiceLog($"Exception processing client connection: {ex.Message}");
+                _log.LogError(ex, "Exception handling client connection (op={Op}, reqId={ReqId})", opName, currentReqId);
+                AppendServiceLog($"[PIPE EXCEPTION] op={opName} request_id={currentReqId ?? "(none)"} type={ex.GetType().Name} message={ex.Message}");
                 try
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Internal service error")));
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, currentReqId ?? Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Internal service error")));
                 }
                 catch
                 {
                     // Ignore write failures on closed pipe
                 }
+            }
+            finally
+            {
+                try
+                {
+                    await writer.FlushAsync();
+                }
+                catch
+                {
+                }
+                AppendServiceLog("[PIPE DISCONNECTED]");
             }
         }
     }
@@ -423,7 +475,7 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
             }
 
-            if (grant.ExpiresAt < now)
+            if (grant.ExpiresAt < now && grant.State != GrantState.Approved && grant.State != GrantState.Reserved)
             {
                 _activeGrants.Remove(requestId);
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired");
@@ -431,13 +483,18 @@ public sealed class UnlockWorker : BackgroundService
 
             var statusStr = grant.State switch
             {
+                GrantState.Pending => LocalAuthStatus.Pending,
                 GrantState.Approved => LocalAuthStatus.Approved,
                 GrantState.Reserved => LocalAuthStatus.Reserved,
                 GrantState.Consumed => LocalAuthStatus.Consumed,
+                GrantState.Rejected => LocalAuthStatus.Rejected,
+                GrantState.Timeout => LocalAuthStatus.Timeout,
+                GrantState.Cancelled => LocalAuthStatus.Cancelled,
+                GrantState.NotPaired => LocalAuthStatus.NotPaired,
                 _ => LocalAuthStatus.Error
             };
 
-            return new LocalAuthResponse(1, requestId, statusStr, "Grant active", grant.ExpiresAt);
+            return new LocalAuthResponse(1, requestId, statusStr, grant.LastMessage ?? "Grant active", grant.ExpiresAt);
         }
     }
 
@@ -447,68 +504,105 @@ public sealed class UnlockWorker : BackgroundService
         foreach (var k in expiredKeys) _activeGrants.Remove(k);
     }
 
-    private async Task<LocalAuthResponse> ProcessAuthRequestAsync(LocalAuthRequest req, StreamWriter writer, CancellationToken stoppingToken)
+    private LocalAuthResponse StartAuthRequest(LocalAuthRequest req, CancellationToken stoppingToken)
     {
         var requestId = req.request_id;
-        var start = DateTimeOffset.UtcNow;
-        AppendServiceLog($"[REQUEST START] request_id={requestId} usage={req.usage} username={req.username ?? "(none)"}");
+        AppendServiceLog($"[REQUEST START] request_id={requestId} usage={req.usage} user_sid={req.user_sid ?? "(none)"} qualified_username={req.qualified_username ?? req.username ?? "(none)"}");
 
-        // 1. Check if another auth request is active
-        if (!await _authLock.WaitAsync(TimeSpan.FromMilliseconds(100), stoppingToken))
+        // Check local config first
+        var cfg = _configStore.Load();
+        if (string.IsNullOrWhiteSpace(cfg.DeviceId) || string.IsNullOrWhiteSpace(cfg.DevicePublicKeyPem) || string.IsNullOrWhiteSpace(cfg.PcToken))
         {
-            AppendServiceLog($"[BUSY] request_id={requestId} - another authentication is in progress");
-            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Busy, "Another authentication request is in progress");
+            AppendServiceLog($"[NOT PAIRED] request_id={requestId} - PC is not paired with an iPhone");
+            lock (_activeGrants)
+            {
+                _activeGrants[requestId] = new AuthGrant
+                {
+                    RequestId = requestId,
+                    ApprovedAt = DateTimeOffset.UtcNow,
+                    ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30).ToUnixTimeSeconds(),
+                    State = GrantState.NotPaired,
+                    LastMessage = "FaceUnlock is not paired on this PC"
+                };
+            }
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotPaired, "FaceUnlock is not paired on this PC");
         }
-
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
         lock (_sessionSync)
         {
+            // If the same request is already in progress, return Pending ACK
+            if (_currentActiveRequestId == requestId && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
+            {
+                AppendServiceLog($"[REQUEST RE-ENTER] request_id={requestId} already active");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Authentication in progress");
+            }
+
+            // If another request is active, cancel it or return busy
+            if (_currentActiveRequestId != null && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
+            {
+                AppendServiceLog($"[BUSY] request_id={requestId} - cancelling previous active request {_currentActiveRequestId}");
+                try { _currentActiveCts.Cancel(); } catch { }
+            }
+
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             _currentActiveRequestId = requestId;
-            _currentActiveCts = linkedCts;
+            _currentActiveCts = cts;
+
+            lock (_activeGrants)
+            {
+                _activeGrants[requestId] = new AuthGrant
+                {
+                    RequestId = requestId,
+                    ApprovedAt = DateTimeOffset.UtcNow,
+                    ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(90).ToUnixTimeSeconds(),
+                    State = GrantState.Pending,
+                    LastMessage = "Waiting for iPhone Face ID..."
+                };
+            }
+
+            // Spawn background task to process auth and update _activeGrants[requestId]
+            _ = Task.Run(() => RunAuthFlowAsync(req, cfg, cts.Token), CancellationToken.None);
+
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Waiting for iPhone Face ID...");
         }
+    }
+
+    private async Task RunAuthFlowAsync(LocalAuthRequest req, LocalConfig cfg, CancellationToken cancellationToken)
+    {
+        var requestId = req.request_id;
+        var start = DateTimeOffset.UtcNow;
+        var deviceId = cfg.DeviceId!;
+        var devicePubKey = cfg.DevicePublicKeyPem!;
+        var api = new ApiClient(cfg);
 
         try
         {
-            // 2. Load and validate local config
-            var cfg = _configStore.Load();
-            if (string.IsNullOrWhiteSpace(cfg.DeviceId) || string.IsNullOrWhiteSpace(cfg.DevicePublicKeyPem) || string.IsNullOrWhiteSpace(cfg.PcToken))
-            {
-                AppendServiceLog($"[NOT PAIRED] request_id={requestId} - PC is not paired with an iPhone");
-                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotPaired, "FaceUnlock is not paired on this PC");
-            }
-
-            var deviceId = cfg.DeviceId;
-            var devicePubKey = cfg.DevicePublicKeyPem;
-            var api = new ApiClient(cfg);
-
-            // Send pending progress to client
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Waiting for iPhone Face ID..."), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-
-            // 3. Try Online Unlock Flow first
+            // 1. Try Online Unlock Flow first
             try
             {
                 _log.LogInformation("Attempting online unlock for request {RequestId}...", requestId);
-                var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, linkedCts.Token);
+                var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
 
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
                     var localGrantExp = RecordGrant(requestId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
-                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Online service", localGrantExp);
+                    return;
                 }
                 else if (onlineResp.Status is LocalAuthStatus.Rejected or LocalAuthStatus.Timeout)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
                     AppendServiceLog($"[{onlineResp.Status.ToUpperInvariant()}] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s");
-                    return new LocalAuthResponse(1, requestId, onlineResp.Status, onlineResp.Message);
+                    SetGrantTerminalState(requestId, onlineResp.Status, onlineResp.Message);
+                    return;
                 }
             }
-            catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                AppendServiceLog($"[CANCELLED] request_id={requestId} online flow cancelled by user");
-                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication cancelled by user");
+                AppendServiceLog($"[CANCELLED] request_id={requestId} online flow cancelled");
+                SetGrantTerminalState(requestId, LocalAuthStatus.Cancelled, "Authentication cancelled");
+                return;
             }
             catch (Exception ex)
             {
@@ -516,37 +610,39 @@ public sealed class UnlockWorker : BackgroundService
                 AppendServiceLog($"Online transport failed for request_id={requestId}: {ex.Message}. Falling back to BLE.");
             }
 
-            // 4. Fallback to BLE Offline Flow if Online was unavailable or errored out
+            // 2. Fallback to BLE Offline Flow
             try
             {
                 _log.LogInformation("Attempting BLE offline unlock for request {RequestId}...", requestId);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Scanning for iPhone via BLE..."), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                SetGrantMessage(requestId, "Scanning for iPhone via BLE...");
 
-                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, linkedCts.Token);
+                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, cancellationToken);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
                     var localGrantExp = RecordGrant(requestId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
-                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Bluetooth LE", localGrantExp);
+                    return;
                 }
                 else
                 {
                     AppendServiceLog($"[{bleResp.Status.ToUpperInvariant()}] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s error={bleResp.Message}");
-                    return new LocalAuthResponse(1, requestId, bleResp.Status, bleResp.Message ?? "BLE authentication failed");
+                    SetGrantTerminalState(requestId, bleResp.Status, bleResp.Message ?? "BLE authentication failed");
+                    return;
                 }
             }
-            catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                AppendServiceLog($"[CANCELLED] request_id={requestId} BLE flow cancelled by user");
-                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication cancelled by user");
+                AppendServiceLog($"[CANCELLED] request_id={requestId} BLE flow cancelled");
+                SetGrantTerminalState(requestId, LocalAuthStatus.Cancelled, "Authentication cancelled");
+                return;
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "BLE offline unlock failed for request {RequestId}", requestId);
                 AppendServiceLog($"BLE transport exception for request_id={requestId}: {ex.Message}");
-                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Error, "Bluetooth authentication failed or iPhone not nearby");
+                SetGrantTerminalState(requestId, LocalAuthStatus.Error, "Bluetooth authentication failed or iPhone not nearby");
             }
         }
         finally
@@ -559,7 +655,36 @@ public sealed class UnlockWorker : BackgroundService
                     _currentActiveCts = null;
                 }
             }
-            _authLock.Release();
+        }
+    }
+
+    private void SetGrantMessage(string requestId, string message)
+    {
+        lock (_activeGrants)
+        {
+            if (_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                grant.LastMessage = message;
+            }
+        }
+    }
+
+    private void SetGrantTerminalState(string requestId, string status, string? message)
+    {
+        lock (_activeGrants)
+        {
+            if (_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                grant.State = status switch
+                {
+                    LocalAuthStatus.Rejected => GrantState.Rejected,
+                    LocalAuthStatus.Timeout => GrantState.Timeout,
+                    LocalAuthStatus.Cancelled => GrantState.Cancelled,
+                    LocalAuthStatus.NotPaired => GrantState.NotPaired,
+                    _ => GrantState.Error
+                };
+                grant.LastMessage = message;
+            }
         }
     }
 

@@ -197,8 +197,10 @@ class FaceUnlockCredential final : public ICredentialProviderCredential2 {
     WCHAR password_[256]           = { 0 };
     WindowsAccountType accountType_ = WindowsAccountType::Local;
 
-    bool         faceIdApproved_   = false;
-    bool         authInProgress_   = false;
+    bool         faceIdApproved_     = false;
+    bool         authInProgress_     = false;
+    bool         userInitiatedAuth_  = false;
+    bool         authFailed_         = false;
     std::wstring activeRequestId_;
     std::wstring approvedRequestId_;
 
@@ -333,6 +335,11 @@ public:
         if (!pbAutoLogon) return E_POINTER;
         *pbAutoLogon = FALSE;
         AppendCpLog("Tile selected");
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            authFailed_ = false;
+            userInitiatedAuth_ = false;
+        }
         return S_OK;
     }
 
@@ -354,6 +361,8 @@ public:
                 approvedRequestId_.clear();
             }
             faceIdApproved_ = false;
+            authFailed_ = false;
+            userInitiatedAuth_ = false;
             SecureZeroMemory(password_, sizeof(password_));
             StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Ready");
         }
@@ -457,7 +466,15 @@ public:
 
     IFACEMETHODIMP SetCheckboxValue(DWORD, BOOL) override { return E_NOTIMPL; }
     IFACEMETHODIMP SetComboBoxSelectedValue(DWORD, DWORD) override { return E_NOTIMPL; }
-    IFACEMETHODIMP CommandLinkClicked(DWORD) override { return E_NOTIMPL; }
+    IFACEMETHODIMP CommandLinkClicked(DWORD dwFieldID) override {
+        if (dwFieldID == FID_SUBMIT) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            userInitiatedAuth_ = true;
+            authFailed_ = false;
+            return S_OK;
+        }
+        return E_NOTIMPL;
+    }
 
     // ---------------------------------------------------------------
     // GetSerialization
@@ -490,7 +507,8 @@ public:
         std::wstring approvedReq;
         std::wstring reqId;
         std::wstring usageStr;
-        std::wstring userStr;
+        std::wstring sidStr;
+        std::wstring qualUserStr;
         WindowsAccountType acctType;
 
         {
@@ -501,6 +519,13 @@ public:
             acctType    = accountType_;
 
             if (!isApproved && !inProgress) {
+                if (authFailed_) {
+                    // Do not auto-retry without explicit user action
+                    *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                    DuplicateString(statusMessage_, ppszOptionalStatusText);
+                    return S_OK;
+                }
+
                 if (acctType == WindowsAccountType::AzureAD) {
                     StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_),
                         L"AzureAD account not supported yet");
@@ -515,9 +540,10 @@ public:
                 CoCreateGuid(&guid);
                 WCHAR guidStr[64] = { 0 };
                 StringFromGUID2(guid, guidStr, ARRAYSIZE(guidStr));
-                reqId      = guidStr;
-                usageStr   = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
-                userStr    = username_;
+                reqId        = guidStr;
+                usageStr     = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
+                sidStr       = userSid_;
+                qualUserStr  = (userQualifiedName_[0] != L'\0') ? userQualifiedName_ : username_;
 
                 authInProgress_   = true;
                 activeRequestId_  = reqId;
@@ -551,7 +577,7 @@ public:
                 // PURE COM LIFETIME: AddRef() before spawning thread
                 this->AddRef();
 
-                std::thread([this, reqId, usageStr, userStr]() {
+                std::thread([this, reqId, usageStr, sidStr, qualUserStr]() {
                     g_authWorkerCount.fetch_add(1, std::memory_order_seq_cst);
 
                     // RAII ReleaseGuard ensures this->Release() is called on EVERY exit path
@@ -571,7 +597,7 @@ public:
 
                     // Cancellation-aware RequestUnlock with cancelToken
                     FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(
-                        reqId, usageStr, userStr, 90000, &this->cancelFlag_);
+                        reqId, usageStr, sidStr, qualUserStr, 90000, &this->cancelFlag_);
 
                     if (this->cancelFlag_.load(std::memory_order_seq_cst)) {
                         AppendCpLog("Async thread: cancelled, exiting safely");
@@ -588,33 +614,37 @@ public:
                             this->authInProgress_ = false;
                             if (ipcResult.ok && ipcResult.status == L"approved") {
                                 this->faceIdApproved_      = true;
+                                this->authFailed_          = false;
                                 this->approvedRequestId_   = reqId;
                                 StringCchCopyW(this->statusMessage_,
                                     ARRAYSIZE(this->statusMessage_),
                                     L"Face ID approved. Enter Windows password.");
                                 success = true;
-                            } else if (ipcResult.status == L"rejected") {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_), L"Face ID rejected");
-                            } else if (ipcResult.status == L"timeout") {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_),
-                                    L"FaceUnlock request timed out");
-                            } else if (ipcResult.status == L"not_paired") {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_),
-                                    L"FaceUnlock is not paired");
-                            } else if (ipcResult.status == L"service_not_running") {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_),
-                                    L"FaceUnlock Service is not running");
-                            } else if (ipcResult.status == L"cancelled") {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_),
-                                    L"Face ID cancelled");
                             } else {
-                                StringCchCopyW(this->statusMessage_,
-                                    ARRAYSIZE(this->statusMessage_), L"FaceUnlock error");
+                                this->authFailed_ = true; // Stop auto-retrying on subsequent GetSerialization calls
+                                if (ipcResult.status == L"rejected") {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_), L"Face ID rejected");
+                                } else if (ipcResult.status == L"timeout") {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_),
+                                        L"FaceUnlock request timed out");
+                                } else if (ipcResult.status == L"not_paired") {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_),
+                                        L"FaceUnlock is not paired");
+                                } else if (ipcResult.status == L"service_not_running") {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_),
+                                        L"FaceUnlock Service is not running");
+                                } else if (ipcResult.status == L"cancelled") {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_),
+                                        L"Face ID cancelled");
+                                } else {
+                                    StringCchCopyW(this->statusMessage_,
+                                        ARRAYSIZE(this->statusMessage_), L"FaceUnlock error");
+                                }
                             }
                             StringCchCopyW(newStatus, ARRAYSIZE(newStatus),
                                 this->statusMessage_);

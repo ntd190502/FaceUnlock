@@ -18,6 +18,8 @@ public sealed record LocalAuthRequest(
     string request_id,
     string? usage = null,
     string? username = null,
+    string? user_sid = null,
+    string? qualified_username = null,
     int? session_id = null
 );
 

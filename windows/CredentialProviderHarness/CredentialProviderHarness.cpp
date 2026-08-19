@@ -690,13 +690,31 @@ static void Test_MultiCallGetSerialization() {
         if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
     }
 
-    // Give a moment for any workers to spawn
-    Sleep(300);
+    // Give a moment for the single worker to spawn and complete/fail (since IPC is unavailable)
+    Sleep(500);
 
     LONG workersAfter = g_pfnGetWorkerCount();
     LONG deltaWorkers = workersAfter - workersBefore;
     printf("  Workers spawned during 20 GetSerialization calls: %ld\n", deltaWorkers);
     Check(deltaWorkers == 1, "Exactly ONE worker thread spawned (AUTH_WORKER_COUNT == 1)");
+
+    // After failure, call GetSerialization 20 more times: must NOT auto-retry without explicit user action
+    for (int i = 0; i < 20; ++i) {
+        CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
+        PWSTR pszStatus = nullptr;
+        CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
+        HRESULT hr = pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
+        Check(SUCCEEDED(hr), "Post-error GetSerialization call succeeded");
+        if (pszStatus) CoTaskMemFree(pszStatus);
+        if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
+    }
+
+    Sleep(200);
+    LONG workersAfterError = g_pfnGetWorkerCount();
+    LONG deltaWorkersPostError = workersAfterError - workersAfter;
+    printf("  Workers spawned during 20 post-error GetSerialization calls: %ld\n", deltaWorkersPostError);
+    Check(deltaWorkersPostError == 0, "No auto-retry worker spawned after error (AUTH_WORKER_COUNT unchanged)");
 
     pCred->UnAdvise();
     pCred->Release();

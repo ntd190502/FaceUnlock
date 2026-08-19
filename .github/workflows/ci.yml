@@ -28,6 +28,7 @@ jobs:
           dotnet restore windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj
           dotnet restore windows/FaceUnlock.Service/FaceUnlock.Service.csproj
           dotnet restore windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
+          dotnet restore windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj
 
       - name: Build FaceUnlock.Core (Release)
         run: dotnet build windows/FaceUnlock.Core/FaceUnlock.Core.csproj --configuration Release --no-restore
@@ -41,6 +42,9 @@ jobs:
       - name: Run BLE framing self-test
         run: dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore
 
+      - name: Run FaceUnlock IPC Integration Tests
+        run: dotnet run --project windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj --configuration Release --no-restore
+
       - name: Build FaceUnlock Credential Provider (Release)
         run: |
           cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -A x64
@@ -52,6 +56,19 @@ jobs:
           $dll = "windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll"
           if (-not (Test-Path $dll)) { throw "Missing FaceUnlockCredentialProvider.dll at $dll" }
           Write-Host "Found DLL: $dll"
+
+      - name: Build & Run Credential Provider Safety Harness
+        shell: pwsh
+        run: |
+          cmake -B windows/CredentialProviderHarness/build -S windows/CredentialProviderHarness -A x64
+          cmake --build windows/CredentialProviderHarness/build --config Release
+          $dll     = Resolve-Path "windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll"
+          $harness = "windows/CredentialProviderHarness/build/Release/CredentialProviderHarness.exe"
+          Write-Host "Running safety harness against: $dll"
+          & $harness "$dll"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Safety Harness FAILED with exit code $LASTEXITCODE"
+          }
 
       - name: Verify BLE framing source is compiled
         shell: pwsh
