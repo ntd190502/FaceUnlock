@@ -85,16 +85,76 @@ public sealed class WindowsBluetoothRadioManager : IBluetoothRadioManager
     }
 }
 
-public static class BleRetryPolicy
+public enum BleWaitState { WaitingConnectivity, Scanning, Resting }
+public enum BleWaitOutcome { ResponseReceived, InternetRestored }
+public sealed record BleWaitResult<T>(BleWaitOutcome Outcome, T? Response, long ScanAttempts);
+
+/// <summary>Runs one sequential BLE scan loop with no overall timeout.</summary>
+public sealed class BleConnectivityWaitLoop
 {
-    public const int DefaultAttempts = 3;
-    public static TimeSpan DelayForAttempt(int completedAttempt) =>
-        completedAttempt switch
+    private readonly IBluetoothRadioManager _radioManager;
+    private readonly IInternetMonitor _internetMonitor;
+    private readonly TimeSpan _restInterval;
+
+    public BleConnectivityWaitLoop(IBluetoothRadioManager radioManager, IInternetMonitor internetMonitor, TimeSpan? restInterval = null)
+    {
+        _radioManager = radioManager;
+        _internetMonitor = internetMonitor;
+        _restInterval = restInterval ?? TimeSpan.FromSeconds(2.5);
+    }
+
+    public async Task<BleWaitResult<T>> WaitAsync<T>(Func<CancellationToken, Task<T?>> scanOnceAsync,
+        bool switchToOnlineWhenInternetRestored, Action<BleWaitState, long, BluetoothRadioStatus?>? onState,
+        CancellationToken ct = default) where T : class
+    {
+        long attempts = 0;
+        using var internetReturned = new CancellationTokenSource();
+        EventHandler<InternetState>? handler = (_, state) =>
         {
-            <= 0 => TimeSpan.Zero,
-            1 => TimeSpan.FromMilliseconds(350),
-            _ => TimeSpan.FromMilliseconds(900)
+            if (switchToOnlineWhenInternetRestored && state == InternetState.Online) internetReturned.Cancel();
         };
+        _internetMonitor.StateChanged += handler;
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (switchToOnlineWhenInternetRestored && _internetMonitor.Current == InternetState.Online)
+                    return new(BleWaitOutcome.InternetRestored, null, attempts);
+                var radio = await _radioManager.EnsureEnabledAsync(ct);
+                if (radio.State != BluetoothState.Enabled)
+                {
+                    onState?.Invoke(BleWaitState.WaitingConnectivity, attempts, radio);
+                    await RestAsync(ct, internetReturned.Token);
+                    if (internetReturned.IsCancellationRequested) return new(BleWaitOutcome.InternetRestored, null, attempts);
+                    continue;
+                }
+                attempts++;
+                onState?.Invoke(BleWaitState.Scanning, attempts, radio);
+                using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(ct, internetReturned.Token);
+                try
+                {
+                    var response = await scanOnceAsync(scanCts.Token);
+                    if (response is not null) return new(BleWaitOutcome.ResponseReceived, response, attempts);
+                }
+                catch (OperationCanceledException) when (internetReturned.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    return new(BleWaitOutcome.InternetRestored, null, attempts);
+                }
+                onState?.Invoke(BleWaitState.Resting, attempts, radio);
+                await RestAsync(ct, internetReturned.Token);
+                if (internetReturned.IsCancellationRequested) return new(BleWaitOutcome.InternetRestored, null, attempts);
+            }
+        }
+        finally { _internetMonitor.StateChanged -= handler; }
+    }
+
+    private async Task RestAsync(CancellationToken ct, CancellationToken internetCt)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, internetCt);
+        try { await Task.Delay(_restInterval, linked.Token); }
+        catch (OperationCanceledException) when (internetCt.IsCancellationRequested && !ct.IsCancellationRequested) { }
+    }
 }
 
 public static class RequestIdentity

@@ -21,6 +21,7 @@ public sealed class UnlockWorker : BackgroundService
     private readonly LsaMachineSecretStore _lsaSecretStore;
     private readonly KeyStore _keyStore;
     private readonly BleScanner _bleScanner;
+    private readonly IBluetoothRadioManager _bluetoothRadioManager;
     private readonly WindowsInternetMonitor _internetMonitor;
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private readonly string _logDir;
@@ -36,6 +37,7 @@ public sealed class UnlockWorker : BackgroundService
     private enum GrantState
     {
         Pending,
+        WaitingConnectivity,
         Approved,
         Reserved,
         Consumed,
@@ -71,7 +73,8 @@ public sealed class UnlockWorker : BackgroundService
         _configStore = new ConfigStore();
         _lsaSecretStore = new LsaMachineSecretStore();
         _keyStore = new KeyStore();
-        _bleScanner = new BleScanner();
+        _bluetoothRadioManager = new WindowsBluetoothRadioManager();
+        _bleScanner = new BleScanner(_bluetoothRadioManager);
         _internetMonitor = new WindowsInternetMonitor();
         _internetMonitor.StateChanged += (_, state) => AppendServiceLog($"[INTERNET STATE] {state}");
 
@@ -593,6 +596,7 @@ public sealed class UnlockWorker : BackgroundService
             var statusStr = grant.State switch
             {
                 GrantState.Pending => LocalAuthStatus.Pending,
+                GrantState.WaitingConnectivity => LocalAuthStatus.WaitingConnectivity,
                 GrantState.Approved => LocalAuthStatus.Approved,
                 GrantState.Reserved => LocalAuthStatus.Reserved,
                 GrantState.Consumed => LocalAuthStatus.Consumed,
@@ -677,6 +681,7 @@ public sealed class UnlockWorker : BackgroundService
                     var status = existing.State switch
                     {
                         GrantState.Pending => LocalAuthStatus.Pending,
+                        GrantState.WaitingConnectivity => LocalAuthStatus.WaitingConnectivity,
                         GrantState.Approved => LocalAuthStatus.Approved,
                         GrantState.Reserved => LocalAuthStatus.Reserved,
                         GrantState.Rejected => LocalAuthStatus.Rejected,
@@ -708,7 +713,9 @@ public sealed class UnlockWorker : BackgroundService
                 {
                     RequestId = requestId,
                     ApprovedAt = DateTimeOffset.UtcNow,
-                    ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(90).ToUnixTimeSeconds(),
+                    // A pending Phase F.1 connectivity wait is explicitly
+                    // unbounded. Approved grants still retain their strict 30s TTL.
+                    ExpiresAt = DateTimeOffset.MaxValue.ToUnixTimeSeconds(),
                     State = GrantState.Pending,
                     LastMessage = "Waiting for iPhone Face ID...",
                     UserSid = req.user_sid,
@@ -790,13 +797,13 @@ public sealed class UnlockWorker : BackgroundService
                 _log.LogInformation("Attempting BLE offline unlock for request {RequestId}...", requestId);
                 SetGrantMessage(requestId, "Scanning for iPhone via BLE...");
 
-                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, cancellationToken);
+                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, !onlineAttempted, cancellationToken);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
 
                 // If the request began offline and connectivity returned during the
                 // bounded BLE attempts, make one online attempt. Never bounce back
                 // to a transport that has already been attempted for this request.
-                if (bleResp.Status == LocalAuthStatus.Timeout && !onlineAttempted && _internetMonitor.Current == InternetState.Online)
+                if (bleResp.Status == LocalAuthStatus.InternetRestored && !onlineAttempted)
                 {
                     AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} BLE->Online reason=InternetRestored");
                     SetGrantMessage(requestId, "Internet restored; contacting iPhone online...");
@@ -872,6 +879,8 @@ public sealed class UnlockWorker : BackgroundService
         {
             if (_activeGrants.TryGetValue(requestId, out var grant))
             {
+                if (grant.State == GrantState.WaitingConnectivity)
+                    grant.State = GrantState.Pending;
                 grant.LastMessage = message;
             }
         }
@@ -953,51 +962,70 @@ public sealed class UnlockWorker : BackgroundService
         LocalConfig cfg,
         string deviceId,
         string devicePubKey,
+        bool switchToOnlineWhenInternetRestored,
         CancellationToken stoppingToken)
     {
-        var session = Guid.NewGuid().ToString("N");
-        var challenge = Protocol.RandomToken();
-        var exp = DateTimeOffset.UtcNow.AddSeconds(45).ToUnixTimeSeconds();
-        var msg = Protocol.OfflineRequestCanonical(session, challenge, cfg.PcId, exp);
-        var payload = new OfflineUnlockPayload(
-            "faceunlock-offline-v1",
-            session,
-            cfg.PcId,
-            cfg.PcName,
-            challenge,
-            exp,
-            _keyStore.SignBase64(msg)
-        );
-
-        OfflineBleResponse? result = null;
-        for (var attempt = 1; attempt <= BleRetryPolicy.DefaultAttempts && result is null; attempt++)
+        var requestId = _currentActiveRequestId ?? "unknown";
+        var loop = new BleConnectivityWaitLoop(_bluetoothRadioManager, _internetMonitor);
+        var wait = await loop.WaitAsync(async scanToken =>
         {
-            if (attempt > 1)
+            // Keep the IPC request and its one worker intact. Each 9-second scan
+            // gets a fresh short-lived signed BLE payload so a late iPhone is safe.
+            var session = Guid.NewGuid().ToString("N");
+            var challenge = Protocol.RandomToken();
+            var exp = DateTimeOffset.UtcNow.AddSeconds(45).ToUnixTimeSeconds();
+            var canonical = Protocol.OfflineRequestCanonical(session, challenge, cfg.PcId, exp);
+            var payload = new OfflineUnlockPayload("faceunlock-offline-v1", session, cfg.PcId, cfg.PcName, challenge, exp, _keyStore.SignBase64(canonical));
+            var response = await _bleScanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(9), scanToken);
+            return response is null ? null : new BleApprovalEnvelope(response, session, challenge, exp);
+        }, switchToOnlineWhenInternetRestored, (state, attempt, radio) =>
+        {
+            if (state == BleWaitState.WaitingConnectivity)
             {
-                var delay = BleRetryPolicy.DelayForAttempt(attempt - 1);
-                AppendServiceLog($"[BLE RETRY] attempt={attempt}/{BleRetryPolicy.DefaultAttempts} delay_ms={delay.TotalMilliseconds:F0}");
-                await Task.Delay(delay, stoppingToken);
+                var message = radio?.Message ?? "Bluetooth is unavailable";
+                SetGrantWaitingConnectivity(requestId, message);
+                AppendServiceLog($"[WAITING_CONNECTIVITY] request_id={requestId} bluetooth={radio?.State} message={message}");
             }
-            result = await _bleScanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(10), stoppingToken);
-        }
-        if (result == null)
-        {
-            return (LocalAuthStatus.Timeout, "iPhone BLE peripheral not found or timed out", null);
-        }
+            else if (state == BleWaitState.Scanning)
+            {
+                SetGrantMessage(requestId, $"Scanning for paired iPhone via BLE (attempt {attempt})...");
+                AppendServiceLog($"[BLE SCAN] request_id={requestId} attempt={attempt} duration_s=9");
+            }
+        }, stoppingToken);
+
+        if (wait.Outcome == BleWaitOutcome.InternetRestored)
+            return (LocalAuthStatus.InternetRestored, "Internet connection restored", null);
+
+        var envelope = wait.Response!;
+        var result = envelope.Response;
 
         if (result.ok == "true" && !string.IsNullOrWhiteSpace(result.signature))
         {
-            var canonical = Protocol.Canonical(session, challenge, cfg.PcId, exp);
+            var canonical = Protocol.Canonical(envelope.Session, envelope.Challenge, cfg.PcId, envelope.ExpiresAt);
             if (!KeyStore.VerifyPem(devicePubKey, canonical, result.signature))
             {
                 _log.LogError("BLE Face ID approval has invalid signature");
                 return (LocalAuthStatus.Error, "Invalid iPhone BLE signature", null);
             }
 
-            return (LocalAuthStatus.Approved, null, exp);
+            return (LocalAuthStatus.Approved, null, envelope.ExpiresAt);
         }
 
         return (LocalAuthStatus.Rejected, result.error ?? "BLE approval rejected", null);
+    }
+
+    private sealed record BleApprovalEnvelope(OfflineBleResponse Response, string Session, string Challenge, long ExpiresAt);
+
+    private void SetGrantWaitingConnectivity(string requestId, string message)
+    {
+        lock (_activeGrants)
+        {
+            if (_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                grant.State = GrantState.WaitingConnectivity;
+                grant.LastMessage = message;
+            }
+        }
     }
 
     private LocalAuthResponse IssueLsaTicket(LocalAuthRequest req)

@@ -41,6 +41,8 @@ public static class LocalAuthStatus
 {
     public const string Ok = "ok";
     public const string Pending = "pending";
+    public const string WaitingConnectivity = "waiting_connectivity";
+    public const string InternetRestored = "internet_restored";
     public const string Approved = "approved";
     public const string Reserved = "reserved";
     public const string Consumed = "consumed";

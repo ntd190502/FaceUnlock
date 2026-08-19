@@ -20,6 +20,7 @@ public partial class MainWindow : Window
         }
 
         Loaded += MainWindow_Loaded;
+        Closing += (_, _) => _engine.CancelFaceIdAttempt();
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -65,7 +66,7 @@ public partial class MainWindow : Window
             case ShellState.WAITING_FACE_ID:
                 StatusTitle.Text = "Waiting for iPhone Face ID...";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)); // Sky
-                StatusDetail.Text = "Please check your paired iPhone to approve Face ID unlock.";
+                StatusDetail.Text = message;
                 break;
 
             case ShellState.APPROVED:
@@ -145,6 +146,7 @@ public partial class MainWindow : Window
 
     private void BtnRecovery_Click(object sender, RoutedEventArgs e)
     {
+        _engine.CancelFaceIdAttempt();
         RecoveryModal.Visibility = Visibility.Visible;
     }
 

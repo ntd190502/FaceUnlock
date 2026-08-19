@@ -49,9 +49,15 @@ Phase F.1 makes transport selection connectivity-aware. The Windows service moni
 the current Internet profile, starts directly with BLE while offline, and switches
 from Online to BLE if connectivity is lost, the online request fails, or it expires.
 Before BLE discovery it detects the Windows Bluetooth radio and requests that Windows
-turn it on when access is allowed. Discovery is retried three times with bounded
-backoff. Windows may deny radio control to a service; that result is surfaced and the
+turn it on when access is allowed. Discovery uses a bounded scan/rest cadence rather
+than a total wait timeout. Windows may deny radio control to a service; that result is surfaced and the
 flow fails closed rather than pretending Bluetooth is available.
+
+For a pending Shell/Service authentication, BLE waiting is intentionally unbounded:
+it scans for 9 seconds, rests for 2.5 seconds, and repeats with exactly one active
+scanner and one IPC request ID. Pending grants do not expire while this loop is
+active; approval grants remain limited to 30 seconds. Cancellation, Recovery, or
+service shutdown cancels the active scan immediately.
 
 ```text
 Windows scans for FaceUnlock BLE service

@@ -231,9 +231,9 @@ public sealed class ShellEngine
                 return false;
             }
 
-            // Poll grant status until terminal state or deadline (~60s)
-            var deadline = DateTime.UtcNow.AddSeconds(60);
-            while (DateTime.UtcNow < deadline && !attemptToken.IsCancellationRequested)
+            // The Service owns the unbounded connectivity wait. The Shell keeps
+            // this same request ID alive until cancellation or a terminal result.
+            while (!attemptToken.IsCancellationRequested)
             {
                 await Task.Delay(1000, attemptToken);
 
@@ -275,6 +275,11 @@ public sealed class ShellEngine
                     return false;
                 }
 
+                if (statusResp.status == LocalAuthStatus.WaitingConnectivity)
+                {
+                    SetState(ShellState.WAITING_FACE_ID, statusResp.message ?? "Waiting for Bluetooth or Internet connectivity...");
+                }
+
                 if (statusResp.status == LocalAuthStatus.Error)
                 {
                     SetState(ShellState.ERROR, statusResp.message ?? "Face ID authorization error.");
@@ -288,12 +293,11 @@ public sealed class ShellEngine
                 return false;
             }
 
-            Log($"Attempt timed out for request_id={reqId}");
-            SetState(ShellState.TIMEOUT, "Request timed out waiting for Face ID.");
             return false;
         }
         catch (OperationCanceledException)
         {
+            await SendIpcAsync(new LocalAuthRequest(1, "cancel_request", reqId), timeoutMs: 1500);
             return false;
         }
         catch (Exception ex)
@@ -309,6 +313,11 @@ public sealed class ShellEngine
                 _isAttemptInProgress = false;
             }
         }
+    }
+
+    public void CancelFaceIdAttempt()
+    {
+        _attemptCts?.Cancel();
     }
 
     private async Task<bool> HandleApprovalFlowAsync(string reqId, string? sid, int session, CancellationToken ct)

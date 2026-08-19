@@ -5,7 +5,7 @@ namespace FaceUnlock.UnitTests;
 
 public class Program
 {
-    public static int Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         Console.WriteLine("============================================================");
         Console.WriteLine("  FaceUnlock LsaMachineSecretStore & Ticket Unit Tests");
@@ -128,11 +128,56 @@ public class Program
             Check(RequestIdentity.From(request) != RequestIdentity.From(changedBinding),
                 "Test 10: Security-binding changes alter the dedup identity");
 
-            Check(BleRetryPolicy.DefaultAttempts == 3,
-                "Test 11: BLE policy performs three bounded attempts");
-            Check(BleRetryPolicy.DelayForAttempt(1) > TimeSpan.Zero &&
-                  BleRetryPolicy.DelayForAttempt(2) > BleRetryPolicy.DelayForAttempt(1),
-                "Test 12: BLE retry uses increasing bounded backoff");
+            // Phase F.1 long-wait loop tests use fakes only; they do not claim
+            // physical Bluetooth, iPhone, or network validation.
+            var offline = new FakeInternetMonitor(InternetState.Offline);
+            var enabledRadio = new FakeRadioManager(BluetoothState.Enabled);
+            var absentScans = 0;
+            var maxConcurrent = 0;
+            var activeScans = 0;
+            using (var absentCts = new CancellationTokenSource())
+            {
+                var loop = new BleConnectivityWaitLoop(enabledRadio, offline, TimeSpan.FromMilliseconds(2));
+                var absentTask = loop.WaitAsync<string>(async ct =>
+                {
+                    maxConcurrent = Math.Max(maxConcurrent, Interlocked.Increment(ref activeScans));
+                    try { absentScans++; await Task.Delay(1, ct); return null; }
+                    finally { Interlocked.Decrement(ref activeScans); }
+                }, true, (_, attempts, _) => { if (attempts >= 4) absentCts.Cancel(); }, absentCts.Token);
+                try { await absentTask; } catch (OperationCanceledException) { }
+            }
+            Check(absentScans >= 4 && maxConcurrent == 1, "Test 11: Absent BLE cycles stay sequential without worker leak");
+
+            var lateScans = 0;
+            var lateLoop = new BleConnectivityWaitLoop(enabledRadio, new FakeInternetMonitor(InternetState.Offline), TimeSpan.FromMilliseconds(1));
+            var late = await lateLoop.WaitAsync<string>(_ => Task.FromResult<string?>(++lateScans >= 4 ? "iphone" : null), true, null);
+            Check(late.Outcome == BleWaitOutcome.ResponseReceived && late.Response == "iphone" && lateScans == 4,
+                "Test 12: Late iPhone continues the same auth loop");
+
+            var internet = new FakeInternetMonitor(InternetState.Offline);
+            var internetLoop = new BleConnectivityWaitLoop(enabledRadio, internet, TimeSpan.FromMilliseconds(10));
+            var onlineScans = 0;
+            var onlineTask = internetLoop.WaitAsync<string>(async ct => { onlineScans++; await Task.Delay(Timeout.Infinite, ct); return null; }, true, null);
+            await Task.Delay(5);
+            for (var i = 0; i < 100; i++) internet.Set(i % 2 == 0 ? InternetState.Online : InternetState.Offline);
+            var online = await onlineTask;
+            Check(online.Outcome == BleWaitOutcome.InternetRestored && onlineScans == 1,
+                "Test 13: 100 connectivity transitions cancel one BLE worker exactly once");
+
+            var offThenOnRadio = new FakeRadioManager(BluetoothState.AccessDenied, BluetoothState.AccessDenied, BluetoothState.Enabled);
+            var radioLoop = new BleConnectivityWaitLoop(offThenOnRadio, new FakeInternetMonitor(InternetState.Offline), TimeSpan.FromMilliseconds(1));
+            var radioResult = await radioLoop.WaitAsync<string>(_ => Task.FromResult<string?>("iphone"), true, null);
+            Check(radioResult.Outcome == BleWaitOutcome.ResponseReceived && offThenOnRadio.Calls >= 3,
+                "Test 14: Bluetooth OFF then manual ON recovers without restart");
+
+            using (var shutdownCts = new CancellationTokenSource())
+            {
+                var shutdownLoop = new BleConnectivityWaitLoop(enabledRadio, new FakeInternetMonitor(InternetState.Offline), TimeSpan.FromMilliseconds(1));
+                var shutdownTask = shutdownLoop.WaitAsync<string>(async ct => { await Task.Delay(Timeout.Infinite, ct); return null; }, true, null, shutdownCts.Token);
+                shutdownCts.Cancel();
+                try { await shutdownTask; Check(false, "Test 15: Shell shutdown stops loop cleanly"); }
+                catch (OperationCanceledException) { Check(true, "Test 15: Shell shutdown stops loop cleanly"); }
+            }
         }
         finally
         {
@@ -148,5 +193,26 @@ public class Program
         Console.WriteLine("============================================================");
 
         return (failed == 0) ? 0 : 1;
+    }
+
+    private sealed class FakeInternetMonitor : IInternetMonitor
+    {
+        public InternetState Current { get; private set; }
+        public event EventHandler<InternetState>? StateChanged;
+        public FakeInternetMonitor(InternetState state) => Current = state;
+        public void Set(InternetState state) { Current = state; StateChanged?.Invoke(this, state); }
+    }
+
+    private sealed class FakeRadioManager : IBluetoothRadioManager
+    {
+        private readonly Queue<BluetoothState> _states;
+        public int Calls { get; private set; }
+        public FakeRadioManager(params BluetoothState[] states) => _states = new Queue<BluetoothState>(states);
+        public Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default)
+        {
+            Calls++;
+            var state = _states.Count > 1 ? _states.Dequeue() : _states.Peek();
+            return Task.FromResult(new BluetoothRadioStatus(state));
+        }
     }
 }
