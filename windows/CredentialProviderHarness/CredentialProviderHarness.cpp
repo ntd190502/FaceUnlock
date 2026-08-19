@@ -937,11 +937,6 @@ int wmain(int argc, wchar_t* argv[]) {
     Test_CtorDtorBalance(); fflush(stdout);
     Test_DllCanUnloadNow(); fflush(stdout);
 
-    printf("\nFreeing DLL...\n"); fflush(stdout);
-    FreeLibrary(g_hDll);
-    printf("Uninitializing COM...\n"); fflush(stdout);
-    CoUninitialize();
-
     printf("\n============================================================\n");
     printf("  RESULTS: %d passed, %d failed\n", g_passed, g_failed);
     if (g_pfnGetCtorCount && g_pfnGetDtorCount) {
@@ -950,5 +945,10 @@ int wmain(int argc, wchar_t* argv[]) {
     printf("============================================================\n");
     fflush(stdout);
 
-    return (g_failed == 0) ? 0 : 1;
+    int exitCode = (g_failed == 0) ? 0 : 1;
+
+    // Flush any pending async tasks/threads before shutdown
+    Sleep(500);
+
+    return exitCode;
 }
