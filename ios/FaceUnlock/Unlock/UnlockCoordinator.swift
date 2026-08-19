@@ -126,6 +126,29 @@ final class UnlockCoordinator: ObservableObject {
         ])
     }
 
+    private var pollingTask: Task<Void, Never>?
+
+    func startForegroundPolling() {
+        guard pollingTask == nil else { return }
+        pollingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self = self else { break }
+                if !self.isBusy && self.pendingOnlineSessionID == nil && AppConfig.current.deviceAPIToken != nil {
+                    if let res = try? await APIClient.shared.pendingUnlock(), res.pending, let sid = res.session_id {
+                        self.pendingOnlineSessionID = sid
+                        await self.approveOnline(sessionID: sid)
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    func stopForegroundPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
     func approveOfflineQR(_ payload: OfflineUnlockPayload) async throws {
         try await validateAndAuthenticateOffline(payload)
 
