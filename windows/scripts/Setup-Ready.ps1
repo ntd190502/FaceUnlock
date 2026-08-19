@@ -22,10 +22,16 @@ $winlogon = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 function Log([string]$Message) { Add-Content -Path $logFile -Value "[$((Get-Date).ToUniversalTime().ToString('o'))] $Message" }
-function IsPaired {
-    if (-not (Test-Path $configPath)) { return $false }
-    try { $c = Get-Content -Raw $configPath | ConvertFrom-Json; return [bool]($c.DeviceId -and $c.DevicePublicKeyPem -and $c.PcToken) }
-    catch { return $false }
+function Get-PairingState {
+    if (-not (Test-Path $configPath)) { return [pscustomobject]@{ Paired=$false; Reason='config_missing' } }
+    try { $c = Get-Content -Raw $configPath | ConvertFrom-Json } catch { return [pscustomobject]@{ Paired=$false; Reason='config_invalid' } }
+    $deviceId = $c.DeviceId; if (-not $deviceId) { $deviceId = $c.device_id }
+    $pub = $c.DevicePublicKeyPem; if (-not $pub) { $pub = $c.device_public_key_pem }
+    $token = $c.PcToken; if (-not $token) { $token = $c.pc_token }
+    if (-not $deviceId) { return [pscustomobject]@{ Paired=$false; Reason='device_id_missing' } }
+    if (-not $pub) { return [pscustomobject]@{ Paired=$false; Reason='device_public_key_missing' } }
+    if (-not $token) { return [pscustomobject]@{ Paired=$false; Reason='pc_token_missing' } }
+    return [pscustomobject]@{ Paired=$true; Reason='paired' }
 }
 function ShellGateEnabled {
     try { return ((Get-ItemProperty -Path $winlogon -Name Shell -ErrorAction SilentlyContinue).Shell -match 'FaceUnlockShell\.exe') }
@@ -93,11 +99,13 @@ if ($Mode -eq 'uninstall') {
 }
 
 $wasEnabled = ShellGateEnabled
-$paired = IsPaired
+$pairingState = Get-PairingState
+$paired = $pairingState.Paired
 $serviceBefore = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $metadataBefore = Test-Path $configPath
 $installMode = if ($serviceBefore -and $metadataBefore) { 'upgrade' } elseif ($metadataBefore) { 'repair' } else { 'fresh' }
 Log "install mode=$installMode paired=$paired shell_enabled_before=$wasEnabled"
+Log "[PAIRING] state=$(if($paired){'paired'}else{'unpaired'}) reason=$($pairingState.Reason)"
 
 try {
     if (-not (Test-Path $shellExe) -or -not (Test-Path $recovery) -or -not (Test-Path $enable) -or -not (Test-Path $disable)) {
@@ -109,8 +117,11 @@ try {
     # A deliberate user-disabled upgrade stays disabled. Only a paired fresh
     # install is auto-enabled; paired enabled upgrades retain the enabled state.
     if (-not $paired) {
-        if ($wasEnabled) { RestoreExplorer }
-        Log 'unpaired: Shell Gate remains disabled; Agent must complete pairing'
+        Log "[SHELL] before=$(if($wasEnabled){'FaceUnlock'}else{'Explorer'})"
+        if ($wasEnabled) { RestoreExplorer; Log '[SHELL] unpaired policy forced disable PASS' } else { Log '[SHELL] unpaired policy already disabled' }
+        if (ShellGateEnabled) { throw 'Unpaired policy verification failed: FaceUnlock Shell is still active' }
+        Log '[SHELL] after=Explorer'
+        Log '[FINAL] paired=False service=Running shell=Disabled desktop=Explorer ready=False'
         exit 0
     }
     if (PhaseEActive) { throw 'Deprecated Phase E LSA package is active; Shell Gate will not be enabled' }
