@@ -851,38 +851,39 @@ static void Test_ExceptionFailSafe() {
     ICredentialProvider* pCP = CreateProvider();
     if (!pCP) { Fail("FailSafe", "CreateInstance failed"); return; }
 
-    printf("  [Step 1] Checking Provider null args...\n");
-    Check(pCP->GetCredentialCount(nullptr, nullptr, nullptr) == E_POINTER, "GetCredentialCount(nullptr) -> E_POINTER");
-    Check(pCP->GetFieldDescriptorCount(nullptr) == E_POINTER, "GetFieldDescriptorCount(nullptr) -> E_POINTER");
-    Check(pCP->GetFieldDescriptorAt(0, nullptr) == E_POINTER, "GetFieldDescriptorAt(0, nullptr) -> E_POINTER");
-    Check(pCP->GetCredentialAt(0, nullptr) == E_POINTER, "GetCredentialAt(0, nullptr) -> E_POINTER");
+    printf("  [Step 1] Checking Provider null args...\n"); fflush(stdout);
+    Check(pCP->GetCredentialCount(nullptr, nullptr, nullptr) == E_POINTER, "GetCredentialCount(nullptr) -> E_POINTER"); fflush(stdout);
+    Check(pCP->GetFieldDescriptorCount(nullptr) == E_POINTER, "GetFieldDescriptorCount(nullptr) -> E_POINTER"); fflush(stdout);
+    Check(pCP->GetFieldDescriptorAt(0, nullptr) == E_POINTER, "GetFieldDescriptorAt(0, nullptr) -> E_POINTER"); fflush(stdout);
+    Check(pCP->GetCredentialAt(0, nullptr) == E_POINTER, "GetCredentialAt(0, nullptr) -> E_POINTER"); fflush(stdout);
 
-    printf("  [Step 2] Setting usage scenario CPUS_LOGON...\n");
+    printf("  [Step 2] Setting usage scenario CPUS_LOGON...\n"); fflush(stdout);
     pCP->SetUsageScenario(CPUS_LOGON, 0);
 
     DWORD dwCount = 0, dwDef = 0; BOOL bAuto = FALSE;
     pCP->GetCredentialCount(&dwCount, &dwDef, &bAuto);
-    printf("  Provider reports %lu credentials\n", dwCount);
+    printf("  Provider reports %lu credentials\n", dwCount); fflush(stdout);
 
     ICredentialProviderCredential* pCred = nullptr;
     HRESULT hrCred = pCP->GetCredentialAt(0, &pCred);
+    printf("  GetCredentialAt(0) returned 0x%08X, pCred=%p\n", (unsigned)hrCred, pCred); fflush(stdout);
     if (SUCCEEDED(hrCred) && pCred) {
-        printf("  [Step 3] Checking Credential null args...\n");
-        Check(pCred->SetSelected(nullptr) == E_POINTER, "SetSelected(nullptr) -> E_POINTER");
-        Check(pCred->GetFieldState(0, nullptr, nullptr) == E_POINTER, "GetFieldState(nullptr) -> E_POINTER");
-        Check(pCred->GetStringValue(0, nullptr) == E_POINTER, "GetStringValue(nullptr) -> E_POINTER");
-        Check(pCred->GetSerialization(nullptr, nullptr, nullptr, nullptr) == E_POINTER, "GetSerialization(nullptr) -> E_POINTER");
-        Check(pCred->ReportResult(0, 0, nullptr, nullptr) == E_POINTER, "ReportResult(nullptr) -> E_POINTER");
+        printf("  [Step 3] Checking Credential null args...\n"); fflush(stdout);
+        Check(pCred->SetSelected(nullptr) == E_POINTER, "SetSelected(nullptr) -> E_POINTER"); fflush(stdout);
+        Check(pCred->GetFieldState(0, nullptr, nullptr) == E_POINTER, "GetFieldState(nullptr) -> E_POINTER"); fflush(stdout);
+        Check(pCred->GetStringValue(0, nullptr) == E_POINTER, "GetStringValue(nullptr) -> E_POINTER"); fflush(stdout);
+        Check(pCred->GetSerialization(nullptr, nullptr, nullptr, nullptr) == E_POINTER, "GetSerialization(nullptr) -> E_POINTER"); fflush(stdout);
+        Check(pCred->ReportResult(0, 0, nullptr, nullptr) == E_POINTER, "ReportResult(nullptr) -> E_POINTER"); fflush(stdout);
 
-        printf("  [Step 4] Checking Credential invalid field IDs...\n");
+        printf("  [Step 4] Checking Credential invalid field IDs...\n"); fflush(stdout);
         CREDENTIAL_PROVIDER_FIELD_STATE cpfs{};
         CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis{};
-        Check(pCred->GetFieldState(999, &cpfs, &cpfis) == E_INVALIDARG, "GetFieldState(999) -> E_INVALIDARG");
+        Check(pCred->GetFieldState(999, &cpfs, &cpfis) == E_INVALIDARG, "GetFieldState(999) -> E_INVALIDARG"); fflush(stdout);
 
         PWSTR psz = nullptr;
-        Check(pCred->GetStringValue(999, &psz) == E_INVALIDARG, "GetStringValue(999) -> E_INVALIDARG");
+        Check(pCred->GetStringValue(999, &psz) == E_INVALIDARG, "GetStringValue(999) -> E_INVALIDARG"); fflush(stdout);
 
-        Check(pCred->SetStringValue(999, L"test") == E_INVALIDARG, "SetStringValue(999) -> E_INVALIDARG");
+        Check(pCred->SetStringValue(999, L"test") == E_INVALIDARG, "SetStringValue(999) -> E_INVALIDARG"); fflush(stdout);
 
         pCred->Release();
     } else {
