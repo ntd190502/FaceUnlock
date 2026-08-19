@@ -13,11 +13,12 @@ namespace FaceUnlock.Service;
 public sealed class UnlockWorker : BackgroundService
 {
     private readonly string _pipeName;
-    private const string ServiceVersion = "1.1.0";
+    private const string ServiceVersion = "1.2.0";
     private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
 
     private readonly ILogger<UnlockWorker> _log;
     private readonly ConfigStore _configStore;
+    private readonly LsaMachineSecretStore _lsaSecretStore;
     private readonly KeyStore _keyStore;
     private readonly BleScanner _bleScanner;
     private readonly SemaphoreSlim _authLock = new(1, 1);
@@ -63,6 +64,7 @@ public sealed class UnlockWorker : BackgroundService
         _log = log;
         _pipeName = pipeName;
         _configStore = new ConfigStore();
+        _lsaSecretStore = new LsaMachineSecretStore();
         _keyStore = new KeyStore();
         _bleScanner = new BleScanner();
 
@@ -120,6 +122,32 @@ public sealed class UnlockWorker : BackgroundService
     {
         _log.LogInformation("FaceUnlock Local Authentication Broker Service starting (v{Version})...", ServiceVersion);
         AppendServiceLog($"FaceUnlock Service v{ServiceVersion} started. Listening on named pipe: FaceUnlock.Auth.v1");
+
+        // 1. Initialize and ensure LSA machine secret is present for passwordless authentication
+        try
+        {
+            var (secret, status, error) = _lsaSecretStore.LoadOrCreate();
+            if (status == LsaSecretStatus.Created)
+            {
+                _log.LogInformation("[LSA SECRET] created at {Path}", _lsaSecretStore.SecretFilePath);
+                AppendServiceLog($"[LSA SECRET] created ({_lsaSecretStore.SecretFilePath})");
+            }
+            else if (status == LsaSecretStatus.Loaded)
+            {
+                _log.LogInformation("[LSA SECRET] loaded from {Path}", _lsaSecretStore.SecretFilePath);
+                AppendServiceLog($"[LSA SECRET] loaded ({_lsaSecretStore.SecretFilePath})");
+            }
+            else
+            {
+                _log.LogError("[LSA SECRET ERROR] status={Status} message={Error}", status, error);
+                AppendServiceLog($"[LSA SECRET ERROR] status={status} message={error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[LSA SECRET ERROR] {Message}", ex.Message);
+            AppendServiceLog($"[LSA SECRET ERROR] exception={ex.Message}");
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -323,7 +351,7 @@ public sealed class UnlockWorker : BackgroundService
                 AppendServiceLog($"[PIPE EXCEPTION] op={opName} request_id={currentReqId ?? "(none)"} type={ex.GetType().Name} message={ex.Message}");
                 try
                 {
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, currentReqId ?? Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Internal service error")));
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, currentReqId ?? Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, $"Internal service error: {ex.Message}")));
                 }
                 catch
                 {
@@ -802,7 +830,6 @@ public sealed class UnlockWorker : BackgroundService
         {
             var now = DateTimeOffset.UtcNow;
             var nowSec = now.ToUnixTimeSeconds();
-            PruneExpiredGrants(nowSec);
 
             if (!_activeGrants.TryGetValue(requestId, out var grant))
             {
@@ -810,17 +837,19 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
             }
 
-            if (grant.State != GrantState.Approved && grant.State != GrantState.Reserved)
-            {
-                AppendServiceLog($"[ISSUE_LSA_TICKET INVALID_STATE] request_id={requestId} state={grant.State}");
-                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, $"Grant in state {grant.State}");
-            }
-
             if (grant.ExpiresAt < nowSec)
             {
                 _activeGrants.Remove(requestId);
                 AppendServiceLog($"[ISSUE_LSA_TICKET EXPIRED] request_id={requestId}");
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired");
+            }
+
+            PruneExpiredGrants(nowSec);
+
+            if (grant.State != GrantState.Approved && grant.State != GrantState.Reserved)
+            {
+                AppendServiceLog($"[ISSUE_LSA_TICKET INVALID_STATE] request_id={requestId} state={grant.State}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, $"Grant in state {grant.State}");
             }
 
             // Verify UserSid binding if provided
@@ -833,9 +862,16 @@ public sealed class UnlockWorker : BackgroundService
                 }
             }
 
+            // Load LSA machine secret
+            var (machineSecret, secretStatus, secretErr) = _lsaSecretStore.LoadOrCreate();
+            if (machineSecret == null || machineSecret.Length != 32)
+            {
+                AppendServiceLog($"[ISSUE_LSA_TICKET FAILED] request_id={requestId} LSA secret unavailable (status={secretStatus}, error={secretErr})");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.LsaSecretUnavailable, "LSA machine secret is not available on this system");
+            }
+
             // Create FACEUNLOCK_LOGON_V1 binary structure
             var cfg = _configStore.Load();
-            var machineSecret = _configStore.GetOrCreateLsaMachineSecret();
 
             var userSid = req.user_sid ?? grant.UserSid ?? string.Empty;
             var qualifiedUser = req.qualified_username ?? grant.QualifiedUsername ?? req.username ?? string.Empty;
@@ -852,10 +888,9 @@ public sealed class UnlockWorker : BackgroundService
             // Serialize header + fields for HMAC
             // Struct size:
             // dwMagic(4) + dwVersion(4) + cbTotalSize(4) + szRequestId(64) + wszUserSid(256) + wszAccountName(512) + wszMachineName(512) + szDeviceId(64) + nIssuedAt(8) + nExpiresAt(8) + bNonce(16) + bHmacSignature(32)
-            // Total size = 4+4+4+64+256+512+512+64+8+8+16+32 = 1480 bytes
-            const int totalSize = 1480;
-            var buffer = new byte[totalSize];
-            using var ms = new MemoryStream(buffer);
+            // Total size = 4+4+4+64+256+512+512+64+8+8+16+32 = 1484 bytes (sizeof(FACEUNLOCK_LOGON_V1))
+            const int totalSize = 1484;
+            using var ms = new MemoryStream(totalSize);
             using var bw = new BinaryWriter(ms);
 
             bw.Write((uint)0x46554C4B); // 'FULK'
@@ -896,16 +931,20 @@ public sealed class UnlockWorker : BackgroundService
             // bNonce (16 bytes)
             bw.Write(nonce);
 
-            // Compute HMAC-SHA256 over everything written so far (1480 - 32 = 1448 bytes)
-            var payloadToSign = buffer.AsSpan(0, totalSize - 32).ToArray();
+            // Flush and get the 1452-byte payload to compute HMAC-SHA256
+            bw.Flush();
+            var payloadToSign = ms.ToArray();
             using var hmac = new HMACSHA256(machineSecret);
             var signature = hmac.ComputeHash(payloadToSign);
             bw.Write(signature);
+            bw.Flush();
+
+            var fullBuffer = ms.ToArray();
 
             // Mark grant consumed
             grant.State = GrantState.Consumed;
 
-            var ticketBase64 = Convert.ToBase64String(buffer);
+            var ticketBase64 = Convert.ToBase64String(fullBuffer);
             AppendServiceLog($"[ISSUE_LSA_TICKET SUCCESS] request_id={requestId} user_sid={userSid} account={accountName} issued_at={issuedAt} expires_at={expiresAt}");
 
             return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "lsa_ticket_issued", expiresAt, ServiceVersion, ticketBase64);
@@ -934,6 +973,23 @@ public sealed class UnlockWorker : BackgroundService
             };
 
             return expiresAt;
+        }
+    }
+
+    public void InjectApprovedGrantForTesting(string requestId, string userSid, string qualifiedUser, string deviceId, long expiresAtSec)
+    {
+        lock (_activeGrants)
+        {
+            _activeGrants[requestId] = new AuthGrant
+            {
+                RequestId = requestId,
+                ApprovedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = expiresAtSec,
+                State = GrantState.Approved,
+                UserSid = userSid,
+                QualifiedUsername = qualifiedUser,
+                DeviceId = deviceId
+            };
         }
     }
 }

@@ -134,8 +134,39 @@ public class Program
             // TEST H: issue_lsa_ticket on invalid/non-existent grant rejects cleanly
             Console.WriteLine("\n[Test H] issue_lsa_ticket on non-existent grant");
             var reqIdH = Guid.NewGuid().ToString("N");
-            var ticketResp = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdH, null, null, "S-1-5-21-0000", "TEST\\User"));
-            Check(ticketResp != null && ticketResp.status == LocalAuthStatus.NotFound, "TEST H: issue_lsa_ticket on non-existent grant returns NotFound");
+            var ticketRespH = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdH, null, null, "S-1-5-21-0000", "TEST\\User"));
+            Check(ticketRespH != null && ticketRespH.status == LocalAuthStatus.NotFound, "TEST H: issue_lsa_ticket on non-existent grant returns NotFound");
+
+            // TEST I: issue_lsa_ticket on approved grant issues valid ticket
+            Console.WriteLine("\n[Test I] issue_lsa_ticket on approved grant");
+            var reqIdI = Guid.NewGuid().ToString("N");
+            var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            worker.InjectApprovedGrantForTesting(reqIdI, "S-1-5-21-12345-67890", "TEST\\ValidUser", "device-test-001", nowSec + 30);
+            var ticketRespI = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdI, null, null, "S-1-5-21-12345-67890", "TEST\\ValidUser"));
+            Check(ticketRespI != null && ticketRespI.status == LocalAuthStatus.Approved && !string.IsNullOrWhiteSpace(ticketRespI.ticket),
+                "TEST I: issue_lsa_ticket returns Approved status and base64 ticket", $"status={ticketRespI?.status} msg={ticketRespI?.message} ticketLen={ticketRespI?.ticket?.Length}");
+
+            // TEST J: issue_lsa_ticket with wrong SID is rejected
+            Console.WriteLine("\n[Test J] issue_lsa_ticket with wrong SID");
+            var reqIdJ = Guid.NewGuid().ToString("N");
+            worker.InjectApprovedGrantForTesting(reqIdJ, "S-1-5-21-11111-22222", "TEST\\UserJ", "device-test-001", nowSec + 30);
+            var ticketRespJ = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdJ, null, null, "S-1-5-21-WRONG-SID", "TEST\\UserJ"));
+            Check(ticketRespJ != null && ticketRespJ.status == LocalAuthStatus.Rejected,
+                "TEST J: issue_lsa_ticket with wrong SID is rejected with Rejected status", $"status={ticketRespJ?.status}");
+
+            // TEST K: issue_lsa_ticket on expired grant is rejected
+            Console.WriteLine("\n[Test K] issue_lsa_ticket on expired grant");
+            var reqIdK = Guid.NewGuid().ToString("N");
+            worker.InjectApprovedGrantForTesting(reqIdK, "S-1-5-21-12345-67890", "TEST\\UserK", "device-test-001", nowSec - 10);
+            var ticketRespK = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdK, null, null, "S-1-5-21-12345-67890", "TEST\\UserK"));
+            Check(ticketRespK != null && ticketRespK.status == LocalAuthStatus.Expired,
+                "TEST K: issue_lsa_ticket on expired grant returns Expired status", $"status={ticketRespK?.status}");
+
+            // TEST L: replayed ticket issuance on consumed grant is rejected
+            Console.WriteLine("\n[Test L] double ticket issuance (replay on consumed grant)");
+            var ticketRespL = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdI, null, null, "S-1-5-21-12345-67890", "TEST\\ValidUser"));
+            Check(ticketRespL != null && ticketRespL.status == LocalAuthStatus.Rejected,
+                "TEST L: second issue_lsa_ticket on already consumed grant returns Rejected status", $"status={ticketRespL?.status}");
         }
         finally
         {

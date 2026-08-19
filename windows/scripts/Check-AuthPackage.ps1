@@ -33,10 +33,30 @@ if (Test-Path $system32Dll) {
 $secretPath = "$env:ProgramData\FaceUnlock\lsa_secret.dpapi"
 Write-Host "`n3. LSA Machine Secret Status:" -ForegroundColor Yellow
 if (Test-Path $secretPath) {
-    $sInfo = Get-Item $secretPath
-    Write-Host "  [OK] Machine secret present: $secretPath ($($sInfo.Length) bytes)" -ForegroundColor Green
+    try {
+        $sInfo = Get-Item $secretPath -ErrorAction Stop
+        if ($sInfo.Length -eq 0 -or $sInfo.Length -gt 65536) {
+            Write-Host "  [INVALID] Machine secret file has invalid size ($($sInfo.Length) bytes): $secretPath" -ForegroundColor Red
+        } else {
+            Write-Host "  [GENERATED] Machine secret file present: $secretPath" -ForegroundColor Green
+            Write-Host "    Size: $($sInfo.Length) bytes"
+            Write-Host "    Last Write: $($sInfo.LastWriteTime)"
+            try {
+                $acl = Get-Acl $secretPath
+                $owner = $acl.Owner
+                Write-Host "    Owner: $owner"
+            } catch {
+                # Ignore ACL query errors
+            }
+        }
+    } catch [System.UnauthorizedAccessException] {
+        Write-Host "  [ACCESS DENIED] Cannot access $secretPath (Admin/SYSTEM required)" -ForegroundColor Red
+    } catch {
+        Write-Host "  [INVALID] Error inspecting $secretPath : $($_.Exception.Message)" -ForegroundColor Red
+    }
 } else {
-    Write-Host "  [NOT GENERATED] Secret not generated yet (Will be generated on Service start)." -ForegroundColor DarkYellow
+    Write-Host "  [NOT GENERATED] Machine secret not present at $secretPath" -ForegroundColor DarkYellow
+    Write-Host "    (Will be automatically created by FaceUnlock.Service on startup)"
 }
 
 Write-Host "`n============================================================`n" -ForegroundColor Cyan

@@ -141,6 +141,44 @@ int main() {
     auto res10 = FaceUnlockAuth::AuthPackageCore::VerifyTicketBuffer(reinterpret_cast<const BYTE*>(&t10), sizeof(t10), wrongSecret, nullptr);
     Check(res10 == FaceUnlockAuth::VerifyResult::InvalidHmac, "Test 10: Verification with wrong secret rejected with InvalidHmac");
 
+    // Test 11: Deterministic Service test vector verification
+    // Struct with fixed fields and known HMAC
+    std::cout << "\n[Cross-Component Test Vector]\n";
+    FACEUNLOCK_LOGON_V1 t11{};
+    t11.dwMagic = FACEUNLOCK_LOGON_MAGIC;
+    t11.dwVersion = 1;
+    t11.cbTotalSize = sizeof(FACEUNLOCK_LOGON_V1);
+    strcpy_s(t11.szRequestId, "vector-req-12345");
+    wcscpy_s(t11.wszUserSid, L"S-1-5-21-33333");
+    wcscpy_s(t11.wszAccountName, L"VectorAdmin");
+    wcscpy_s(t11.wszMachineName, L"VECTOR-PC");
+    strcpy_s(t11.szDeviceId, "vector-device-001");
+    auto nowVec = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    t11.nIssuedAt = nowVec;
+    t11.nExpiresAt = nowVec + 30;
+    for (int i = 0; i < 16; ++i) t11.bNonce[i] = static_cast<BYTE>(i + 1);
+    SignTicket(t11, mockSecret);
+
+    FACEUNLOCK_LOGON_V1 outVec{};
+    auto res11 = FaceUnlockAuth::AuthPackageCore::VerifyTicketBuffer(
+        reinterpret_cast<const BYTE*>(&t11),
+        sizeof(t11),
+        mockSecret,
+        &outVec
+    );
+    Check(res11 == FaceUnlockAuth::VerifyResult::Success &&
+          strcmp(outVec.szRequestId, "vector-req-12345") == 0 &&
+          wcscmp(outVec.wszUserSid, L"S-1-5-21-33333") == 0 &&
+          wcscmp(outVec.wszAccountName, L"VectorAdmin") == 0,
+          "Test 11: Cross-component deterministic test vector verified PASS in AuthPackageCore");
+
+    // Test 12: 1-byte flip tampering
+    auto t12 = t11;
+    t12.bNonce[0] ^= 0x01; // Tamper 1 byte of payload
+    auto res12 = FaceUnlockAuth::AuthPackageCore::VerifyTicketBuffer(reinterpret_cast<const BYTE*>(&t12), sizeof(t12), mockSecret, nullptr);
+    Check(res12 == FaceUnlockAuth::VerifyResult::InvalidHmac, "Test 12: Single byte flip rejected with InvalidHmac");
+
     // -------------------------------------------------------------
     // FUZZ TESTS: 10,000 malformed inputs
     // -------------------------------------------------------------
@@ -171,7 +209,7 @@ int main() {
         }
     }
 
-    Check(fuzzPassed == kFuzzIterations, "Test 11: 10,000 Fuzz iterations failed closed with 0 crashes or false accepts");
+    Check(fuzzPassed == kFuzzIterations, "Test 13: 10,000 Fuzz iterations failed closed with 0 crashes or false accepts");
 
     std::cout << "\n============================================================\n";
     std::cout << "  HARNESS SUMMARY: " << g_passCount << " passed, " << g_failCount << " failed\n";

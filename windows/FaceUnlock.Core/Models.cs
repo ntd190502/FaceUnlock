@@ -49,6 +49,7 @@ public static class LocalAuthStatus
     public const string Busy = "busy";
     public const string Expired = "expired";
     public const string NotFound = "not_found";
+    public const string LsaSecretUnavailable = "lsa_secret_unavailable";
 }
 
 public sealed class LocalConfig {

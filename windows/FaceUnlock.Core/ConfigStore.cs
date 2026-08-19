@@ -50,35 +50,9 @@ public sealed class ConfigStore {
         } catch { return null; }
     }
 
-    public byte[] GetOrCreateLsaMachineSecret() {
-        if (File.Exists(_lsaSecretPath)) {
-            try {
-                var enc = File.ReadAllBytes(_lsaSecretPath);
-                return ProtectedData.Unprotect(enc, LsaEntropy, DataProtectionScope.LocalMachine);
-            } catch {
-                // If corrupted or unreadable, regenerate
-            }
-        }
-        var newSecret = new byte[32];
-        RandomNumberGenerator.Fill(newSecret);
-        try {
-            var enc = ProtectedData.Protect(newSecret, LsaEntropy, DataProtectionScope.LocalMachine);
-            File.WriteAllBytes(_lsaSecretPath, enc);
-            // Secure ACL to SYSTEM + Admins only
-            try {
-                var fileInfo = new FileInfo(_lsaSecretPath);
-                var fileSec = fileInfo.GetAccessControl();
-                fileSec.SetAccessRuleProtection(true, false);
-                var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
-                var adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-                fileSec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(systemSid, System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
-                fileSec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(adminSid, System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
-                fileInfo.SetAccessControl(fileSec);
-            } catch {
-                // Ignore ACL errors if not running with privilege
-            }
-        } catch {
-        }
-        return newSecret;
+    public byte[]? GetOrCreateLsaMachineSecret() {
+        var store = new LsaMachineSecretStore(_lsaSecretPath);
+        var (secret, _, _) = store.LoadOrCreate();
+        return secret;
     }
 }

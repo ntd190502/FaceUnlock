@@ -31,7 +31,8 @@ public:
     );
 
     static bool LoadMachineSecretFromDpapi(
-        std::vector<BYTE>& outSecret
+        std::vector<BYTE>& outSecret,
+        const wchar_t* customPath = nullptr
     );
 
     static bool CheckAndRecordNonce(

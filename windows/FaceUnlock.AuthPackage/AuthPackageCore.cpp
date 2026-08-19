@@ -61,15 +61,19 @@ bool AuthPackageCore::CheckAndRecordNonce(const BYTE* pNonce16, INT64 nExpiresAt
     return true;
 }
 
-bool AuthPackageCore::LoadMachineSecretFromDpapi(std::vector<BYTE>& outSecret) {
+bool AuthPackageCore::LoadMachineSecretFromDpapi(std::vector<BYTE>& outSecret, const wchar_t* customPath) {
     outSecret.clear();
 
-    WCHAR appData[MAX_PATH] = { 0 };
-    if (GetEnvironmentVariableW(L"ProgramData", appData, ARRAYSIZE(appData)) == 0) {
-        StringCchCopyW(appData, ARRAYSIZE(appData), L"C:\\ProgramData");
+    std::wstring secretPath;
+    if (customPath && customPath[0] != L'\0') {
+        secretPath = customPath;
+    } else {
+        WCHAR appData[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"ProgramData", appData, ARRAYSIZE(appData)) == 0) {
+            StringCchCopyW(appData, ARRAYSIZE(appData), L"C:\\ProgramData");
+        }
+        secretPath = std::wstring(appData) + L"\\FaceUnlock\\lsa_secret.dpapi";
     }
-
-    std::wstring secretPath = std::wstring(appData) + L"\\FaceUnlock\\lsa_secret.dpapi";
 
     HANDLE hFile = CreateFileW(
         secretPath.c_str(),
