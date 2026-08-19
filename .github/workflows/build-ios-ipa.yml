@@ -62,8 +62,8 @@ jobs:
         env:
           BUNDLE_ID: ${{ inputs.bundle_id || 'io.faceunlock.app' }}
         run: |
-          chmod +x ios/scripts/build_unsigned_ipa.sh
-          ios/scripts/build_unsigned_ipa.sh
+          chmod +x ios/scripts/build_ipa.sh
+          ios/scripts/build_ipa.sh
 
       - name: Validate signed-build secrets
         if: ${{ (inputs.build_type || 'unsigned-jb') == 'signed-development' }}
