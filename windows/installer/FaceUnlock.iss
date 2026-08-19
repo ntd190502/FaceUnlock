@@ -71,7 +71,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ;
 ; Idempotent service/pairing/shell policy. It logs degraded failures and restores
 ; explorer.exe instead of leaving a broken Shell Gate active.
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode install -InstallDir ""{app}"""; Flags: runhidden waituntilterminated ignoreerrors
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode install -InstallDir ""{app}"""; Flags: runhidden waituntilterminated
 ; Launch Agent after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
