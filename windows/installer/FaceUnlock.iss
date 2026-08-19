@@ -32,7 +32,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "bin\FaceUnlock.Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock.Service.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "bin\FaceUnlock.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockCredentialProvider.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
