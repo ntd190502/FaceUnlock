@@ -17,11 +17,6 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Setup MSVC & CMake
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       - name: Publish FaceUnlock.Agent x64
         shell: pwsh
         run: |
@@ -47,7 +42,7 @@ jobs:
       - name: Build FaceUnlockCredentialProvider.dll x64
         shell: pwsh
         run: |
-          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -G "Visual Studio 17 2022" -A x64
+          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -A x64
           cmake --build windows/CredentialProvider/build --config Release
 
       - name: Prepare Installer Staging Directory
