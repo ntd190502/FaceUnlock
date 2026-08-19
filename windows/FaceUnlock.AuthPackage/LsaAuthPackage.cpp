@@ -1,6 +1,10 @@
 #define SECURITY_WIN32
+#define WIN32_NO_STATUS
 #include <windows.h>
+#undef WIN32_NO_STATUS
+#include <ntstatus.h>
 #include <security.h>
+#include <ntsecapi.h>
 #include <ntsecpkg.h>
 #include <sddl.h>
 #include <strsafe.h>
