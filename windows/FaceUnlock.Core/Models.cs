@@ -11,6 +11,36 @@ public record RevokeDeviceResponse(bool ok, bool revoked, string device_id);
 public record OfflineUnlockPayload(string type, string session_id, string pc_id, string pc_name, string challenge, long expires_at, string pc_signature);
 public record OfflineBleResponse(string ok, string? session_id, string? signature, string? error);
 
+// Local IPC models for CredentialProvider <-> FaceUnlock.Service
+public sealed record LocalAuthRequest(
+    int version,
+    string command,
+    string request_id,
+    string usage,
+    string? username = null,
+    int? session_id = null
+);
+
+public sealed record LocalAuthResponse(
+    int version,
+    string request_id,
+    string status,
+    string? message = null,
+    long? expires_at = null
+);
+
+public static class LocalAuthStatus
+{
+    public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
+    public const string Timeout = "timeout";
+    public const string Error = "error";
+    public const string Cancelled = "cancelled";
+    public const string NotPaired = "not_paired";
+    public const string Busy = "busy";
+}
+
 public sealed class LocalConfig {
     public string ServerUrl { get; set; } = "https://face.bobabliss.io.vn";
     public string PcId { get; set; } = Guid.NewGuid().ToString("N");

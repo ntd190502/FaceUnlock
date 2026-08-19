@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FaceUnlock.Core;
 
 static void Require(bool condition, string message)
@@ -97,3 +98,16 @@ using (var ecdsa = System.Security.Cryptography.ECDsa.Create(System.Security.Cry
 }
 
 Console.WriteLine("Crypto & Canonical cross-platform self-test PASS.");
+
+// Test LocalAuth IPC Model Serialization / Deserialization
+var req = new LocalAuthRequest(1, "request_unlock", "req-12345-abc", "unlock", "testuser", 1);
+var reqJson = JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var reqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(reqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(reqParsed != null && reqParsed.command == "request_unlock" && reqParsed.request_id == "req-12345-abc", "LocalAuthRequest JSON serialization failure.");
+
+var resp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "Face ID approved", 1771234567);
+var respJson = JsonSerializer.Serialize(resp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var respParsed = JsonSerializer.Deserialize<LocalAuthResponse>(respJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(respParsed != null && respParsed.status == LocalAuthStatus.Approved && respParsed.expires_at == 1771234567, "LocalAuthResponse JSON serialization failure.");
+
+Console.WriteLine("LocalAuth IPC Model self-test PASS.");

@@ -1,4 +1,5 @@
 #include "FaceUnlockCredentialProvider.h"
+#include "FaceUnlockIpcClient.h"
 #include <new>
 #include <strsafe.h>
 #include <shlwapi.h>
@@ -49,7 +50,7 @@ class FaceUnlockCredential final : public ICredentialProviderCredential {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
     ICredentialProviderCredentialEvents* events_ = nullptr;
-    WCHAR statusMessage_[256] = L"Phase A: Ready for authentication.";
+    WCHAR statusMessage_[256] = L"Ready";
 
 public:
     FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) : usage_(cpus) {}
@@ -187,14 +188,70 @@ public:
         if (!pcpgsr || !pcpcs || !ppszOptionalStatusText || !pcpsiOptionalStatusIcon)
             return E_POINTER;
 
+        // Phase B: Always return CPGSR_NO_CREDENTIAL_FINISHED (no Windows credential serialization yet)
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
         pcpcs->clsidCredentialProvider = CLSID_FaceUnlockProvider;
         pcpcs->rgbSerialization = nullptr;
         pcpcs->cbSerialization = 0;
         pcpcs->ulAuthenticationPackage = 0;
 
-        *pcpsiOptionalStatusIcon = CPSI_WARNING;
-        return DuplicateString(L"FaceUnlock Phase A: Credential tile active (Authentication wiring in Phase B).", ppszOptionalStatusText);
+        // 1. Update tile status to "Waiting for iPhone Face ID..."
+        StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Waiting for iPhone Face ID...");
+        if (events_) {
+            events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        }
+
+        // 2. Perform Named Pipe IPC Request to FaceUnlock.Service
+        GUID guid;
+        CoCreateGuid(&guid);
+        WCHAR guidStr[64] = { 0 };
+        StringFromGUID2(guid, guidStr, ARRAYSIZE(guidStr));
+
+        std::wstring requestId = guidStr;
+        std::wstring usageStr = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
+        std::wstring username = L"";
+
+        FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(requestId, usageStr, username, 90000);
+
+        // 3. Map IPC result to UI status
+        if (ipcResult.ok && ipcResult.status == L"approved") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID approved");
+            *pcpsiOptionalStatusIcon = CPSI_SUCCESS;
+            DuplicateString(L"Face ID approved. (Windows credential serialization enabled in Phase C).", ppszOptionalStatusText);
+        } else if (ipcResult.status == L"rejected") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID rejected");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            DuplicateString(L"Face ID authentication was rejected on iPhone.", ppszOptionalStatusText);
+        } else if (ipcResult.status == L"timeout") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock request timed out");
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+            DuplicateString(L"FaceUnlock request timed out waiting for iPhone.", ppszOptionalStatusText);
+        } else if (ipcResult.status == L"not_paired") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is not paired");
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+            DuplicateString(L"Please open FaceUnlock Agent on Windows to pair an iPhone first.", ppszOptionalStatusText);
+        } else if (ipcResult.status == L"busy") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is busy");
+            *pcpsiOptionalStatusIcon = CPSI_WARNING;
+            DuplicateString(L"Another FaceUnlock request is currently in progress.", ppszOptionalStatusText);
+        } else if (ipcResult.status == L"service_not_running") {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock Service is not running");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            DuplicateString(L"FaceUnlock Service is not running. Please start the service.", ppszOptionalStatusText);
+        } else {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock error");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            DuplicateString(
+                ipcResult.message.empty() ? L"FaceUnlock authentication encountered an error." : ipcResult.message.c_str(),
+                ppszOptionalStatusText
+            );
+        }
+
+        if (events_) {
+            events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        }
+
+        return S_OK;
     }
 
     IFACEMETHODIMP ReportResult(

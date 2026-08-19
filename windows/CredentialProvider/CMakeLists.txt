@@ -4,6 +4,7 @@ project(FaceUnlockCredentialProvider LANGUAGES CXX)
 add_library(FaceUnlockCredentialProvider SHARED
     dllmain.cpp
     FaceUnlockCredentialProvider.cpp
+    FaceUnlockIpcClient.cpp
     FaceUnlockCredentialProvider.def
 )
 
