@@ -100,7 +100,7 @@ using (var ecdsa = System.Security.Cryptography.ECDsa.Create(System.Security.Cry
 Console.WriteLine("Crypto & Canonical cross-platform self-test PASS.");
 
 // Test LocalAuth IPC Model Serialization / Deserialization
-var req = new LocalAuthRequest(1, "request_unlock", "req-12345-abc", "unlock", "testuser", 1);
+var req = new LocalAuthRequest(1, "request_unlock", "req-12345-abc", "unlock", "testuser", "S-1-5-21-0000", "TEST\\testuser", 1);
 var reqJson = JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 var reqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(reqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(reqParsed != null && reqParsed.command == "request_unlock" && reqParsed.request_id == "req-12345-abc", "LocalAuthRequest JSON serialization failure.");
