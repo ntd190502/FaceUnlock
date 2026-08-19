@@ -5,6 +5,8 @@
 HRESULT CreateFaceUnlockProvider(REFIID riid, void** ppv);
 extern const CLSID CLSID_FaceUnlockProvider;
 
+void AppendCpLog(const std::string& message);
+
 // Diagnostic lifetime counters for verification & test harness
 extern "C" {
     __declspec(dllexport) LONG WINAPI GetCredentialCtorCount();

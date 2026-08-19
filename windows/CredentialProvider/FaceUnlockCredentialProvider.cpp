@@ -110,7 +110,7 @@ static const char* AccountTypeToString(WindowsAccountType type) {
 
 // Safe minimal diagnostic logging with size rotation (max 2 MB)
 // Never throws. Never crashes LogonUI.
-static void AppendCpLog(const std::string& message) {
+void AppendCpLog(const std::string& message) {
     try {
         WCHAR appData[MAX_PATH] = { 0 };
         if (GetEnvironmentVariableW(L"ProgramData", appData, ARRAYSIZE(appData)) == 0) {

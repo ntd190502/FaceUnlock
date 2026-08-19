@@ -1,4 +1,5 @@
 #include "FaceUnlockIpcClient.h"
+#include "FaceUnlockCredentialProvider.h"
 #include <strsafe.h>
 
 static const WCHAR* const kPipeName = L"\\\\.\\pipe\\FaceUnlock.Auth.v1";
