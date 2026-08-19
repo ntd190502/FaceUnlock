@@ -1,8 +1,11 @@
-# FaceUnlock phase 1–6 completion overlay
+# FaceUnlock source completion summary
 
 Baseline inspected: `a18d27409dadf4b53226b1352b8c2a606ee9a108`.
 
-This overlay completes the remaining work without modifying `windows/CredentialProvider/` or `windows/CompanionCDF/`.
+The current source includes Phase F Shell Gate, Phase F.1 connectivity-aware
+Online/BLE transport, safe installer orchestration, and all tracked Windows/iOS/
+hosting build inputs. Phase E remains experimental/deprecated and is not enabled by
+the installer.
 
 ## Added/fixed
 
