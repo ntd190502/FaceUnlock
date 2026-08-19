@@ -851,12 +851,13 @@ static void Test_ExceptionFailSafe() {
     ICredentialProvider* pCP = CreateProvider();
     if (!pCP) { Fail("FailSafe", "CreateInstance failed"); return; }
 
-    // Test null/invalid args on Provider
+    printf("  Checking Provider null args...\n");
     Check(pCP->GetCredentialCount(nullptr, nullptr, nullptr) == E_POINTER, "GetCredentialCount(nullptr) -> E_POINTER");
     Check(pCP->GetFieldDescriptorCount(nullptr) == E_POINTER, "GetFieldDescriptorCount(nullptr) -> E_POINTER");
     Check(pCP->GetFieldDescriptorAt(0, nullptr) == E_POINTER, "GetFieldDescriptorAt(0, nullptr) -> E_POINTER");
     Check(pCP->GetCredentialAt(0, nullptr) == E_POINTER, "GetCredentialAt(0, nullptr) -> E_POINTER");
 
+    printf("  Setting usage scenario...\n");
     pCP->SetUsageScenario(CPUS_LOGON, 0);
     ICredentialProviderSetUserArray* pSUA = nullptr;
     pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
@@ -867,17 +868,18 @@ static void Test_ExceptionFailSafe() {
         pSUA->Release();
     }
 
+    printf("  Getting credential...\n");
     ICredentialProviderCredential* pCred = nullptr;
     pCP->GetCredentialAt(0, &pCred);
     if (pCred) {
-        // Test null/invalid args on Credential
+        printf("  Checking Credential null args...\n");
         Check(pCred->SetSelected(nullptr) == E_POINTER, "SetSelected(nullptr) -> E_POINTER");
         Check(pCred->GetFieldState(0, nullptr, nullptr) == E_POINTER, "GetFieldState(nullptr) -> E_POINTER");
         Check(pCred->GetStringValue(0, nullptr) == E_POINTER, "GetStringValue(nullptr) -> E_POINTER");
         Check(pCred->GetSerialization(nullptr, nullptr, nullptr, nullptr) == E_POINTER, "GetSerialization(nullptr) -> E_POINTER");
         Check(pCred->ReportResult(0, 0, nullptr, nullptr) == E_POINTER, "ReportResult(nullptr) -> E_POINTER");
 
-        // Invalid field IDs
+        printf("  Checking Credential invalid args...\n");
         CREDENTIAL_PROVIDER_FIELD_STATE cpfs{};
         CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis{};
         Check(pCred->GetFieldState(999, &cpfs, &cpfis) == E_INVALIDARG, "GetFieldState(999) -> E_INVALIDARG");
