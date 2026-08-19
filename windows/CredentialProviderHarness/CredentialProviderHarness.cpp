@@ -178,8 +178,6 @@ public:
     IFACEMETHODIMP DeleteFieldComboBoxItem(ICredentialProviderCredential*, DWORD, DWORD) override { return S_OK; }
     IFACEMETHODIMP AppendFieldComboBoxItem(ICredentialProviderCredential*, DWORD, LPCWSTR) override { return S_OK; }
     IFACEMETHODIMP SetFieldSubmitButton(ICredentialProviderCredential*, DWORD, DWORD) override { return S_OK; }
-    IFACEMETHODIMP DeleteItem(ICredentialProviderCredential*, DWORD) override { return S_OK; }
-    IFACEMETHODIMP AppendItem(ICredentialProviderCredential*, CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR*) override { return S_OK; }
     IFACEMETHODIMP OnCreatingWindow(HWND*) override { return S_OK; }
 };
 
