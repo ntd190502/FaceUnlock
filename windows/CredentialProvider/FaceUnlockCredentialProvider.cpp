@@ -506,6 +506,8 @@ public:
         bool isApproved   = false;
         bool inProgress   = false;
         std::wstring approvedReq;
+        std::wstring userSidCopy;
+        std::wstring userQualCopy;
         std::wstring reqId;
         std::wstring usageStr;
         std::wstring sidStr;
@@ -514,10 +516,12 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
-            isApproved  = faceIdApproved_;
-            inProgress  = authInProgress_;
-            approvedReq = approvedRequestId_;
-            acctType    = accountType_;
+            isApproved   = faceIdApproved_;
+            inProgress   = authInProgress_;
+            approvedReq  = approvedRequestId_;
+            userSidCopy  = userSid_;
+            userQualCopy = (userQualifiedName_[0] != L'\0') ? userQualifiedName_ : username_;
+            acctType     = accountType_;
 
             if (!isApproved && !inProgress) {
                 if (authFailed_) {
