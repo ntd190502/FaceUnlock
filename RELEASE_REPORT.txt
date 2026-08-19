@@ -1,0 +1,58 @@
+FaceUnlock phase 1-6 completion overlay
+=========================================
+
+Reviewed baseline
+-----------------
+Repository: ntd190502/FaceUnlock
+Commit: a18d27409dadf4b53226b1352b8c2a606ee9a108
+Message: feat: harden device management hosting BLE and security
+
+Scope completed in this overlay
+-------------------------------
+- Telegram online approval path retained.
+- Foreground iOS Face ID polling/approval retained.
+- Explicit device selection/revocation retained.
+- iOS Keychain + Windows DPAPI token protection retained.
+- PC public-key pinning retained.
+- BLE target-device matching hardened to fail closed.
+- iOS Device ID characteristic changed to a dynamic read so pairing does not require an app restart before BLE identity matches.
+- BLE request and response transport upgraded to framed, MTU-safe chunking.
+- CoreBluetooth notification backpressure handled with a send queue.
+- Legacy iOS UserDefaults bearer-token migration now removes the plaintext copy immediately after successful migration.
+- Swift + .NET BLE framing self-tests added to CI.
+- APNs wording cleaned from iOS GitHub Actions documentation.
+- README/architecture/security wording corrected so approval verification is not confused with a completed Windows/LSA unlock.
+- Credential Provider and CompanionCDF intentionally unchanged.
+
+BLE framing v1
+--------------
+Magic: "FU"
+Version: 1
+Kinds: request=1, response=2
+Header: 9 bytes
+Windows request frame size: 20 bytes total
+Maximum reassembled message: 16 KiB
+Incomplete assembly timeout: 15 seconds
+Duplicate chunks: ignored
+Out-of-order chunks: supported
+Legacy unframed packet: accepted for backward compatibility
+
+Validation performed locally
+----------------------------
+PASS - Swift BLEFrameCodec compiled and executed round-trip self-test.
+PASS - Self-test exercised a 1024-byte payload split into 94 frames at 20 bytes/frame.
+PASS - Swift self-test exercised out-of-order delivery, duplicate chunks, legacy payload compatibility and oversized-message rejection.
+PASS - Swift parser accepted BLEFrameCodec.swift, BLEPeripheralManager.swift and Config.swift.
+PASS - YAML parser accepted the updated CI workflow and found jobs: build-windows, lint-hosting, test-ble-framing-swift.
+PASS - Overlay file-list consistency check performed before packaging.
+
+Environment limitations
+-----------------------
+- The current Linux container does not have the .NET SDK, Windows Runtime APIs, Visual Studio, or Windows SDK, so the Windows projects cannot be compiled locally here.
+- The current Linux container is not Xcode/macOS, so the full iOS app cannot be linked against CoreBluetooth/LocalAuthentication locally.
+- Those platform builds are delegated to the repository GitHub Actions workflows included/updated by this overlay.
+- GitHub connector read access works, but repository write operations returned HTTP 403 "Resource not accessible by integration". Therefore this overlay was NOT pushed to GitHub automatically.
+
+Important product limitation
+----------------------------
+This phase completes FaceUnlock approval, transport, pairing, device targeting, and hardening work. `windows/CredentialProvider/` remains a scaffold. A successful phone approval is not, by itself, a Windows/LSA passwordless unlock implementation.

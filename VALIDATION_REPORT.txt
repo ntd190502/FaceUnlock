@@ -1,0 +1,42 @@
+FaceUnlock completion overlay validation
+========================================
+UTC: 2026-08-19T04:05:32Z
+Baseline: a18d27409dadf4b53226b1352b8c2a606ee9a108
+
+[1] Python apply helper syntax
+PASS
+
+[2] Swift BLE codec typecheck
+PASS
+
+[3] Swift overlay syntax parse
+PASS
+
+[4] Swift BLE framing runtime self-test
+BLEFrameCodec Swift self-test PASS: 94 frames
+PASS
+
+[5] GitHub Actions YAML parse
+ci.yml PASS
+build-ios-ipa.yml PASS
+
+[6] Stale runtime path check in repo manifest
+PASS
+
+[7] Required completion files
+PASS ios/FaceUnlock/BLE/BLEFrameCodec.swift
+PASS ios/FaceUnlock/BLE/BLEPeripheralManager.swift
+PASS ios/scripts/ble_frame_selftest.swift
+PASS windows/FaceUnlock.Core/BleFrameCodec.cs
+PASS windows/FaceUnlock.Core/BleScanner.cs
+PASS windows/FaceUnlock.BleFrameSelfTest/Program.cs
+PASS .github/workflows/ci.yml
+PASS .github/workflows/build-ios-ipa.yml
+
+[8] .NET compile availability
+NOT RUN: dotnet SDK is not installed in this Linux container.
+Windows compile + C# self-test is wired into .github/workflows/ci.yml.
+
+[9] iOS app link/build availability
+NOT RUN locally: requires macOS/Xcode/CoreBluetooth.
+Swift Foundation framing logic was typechecked and executed above; full IPA build remains a GitHub macOS CI gate.

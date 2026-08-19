@@ -1,0 +1,9 @@
+hosting/config.php
+*.p8
+**/bin/
+**/obj/
+ios/build/
+ios/archive.xcarchive/
+ios/FaceUnlock.xcodeproj/
+windows/CredentialProvider/build/
+.DS_Store

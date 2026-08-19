@@ -1,0 +1,167 @@
+name: Build FaceUnlock iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "IPA type"
+        required: true
+        default: "unsigned-jb"
+        type: choice
+        options:
+          - unsigned-jb
+          - signed-development
+      bundle_id:
+        description: "iOS Bundle ID (signed mode must match provisioning profile)"
+        required: true
+        default: "io.faceunlock.app"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    name: Build ${{ inputs.build_type }}
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode environment
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Test BLE framing codec
+        run: |
+          swiftc \
+            ios/FaceUnlock/BLE/BLEFrameCodec.swift \
+            ios/scripts/ble_frame_selftest.swift \
+            -o "$RUNNER_TEMP/ble_frame_selftest"
+          "$RUNNER_TEMP/ble_frame_selftest"
+
+      - name: Build unsigned IPA for jailbroken iPhone
+        if: ${{ (inputs.build_type || 'unsigned-jb') == 'unsigned-jb' }}
+        env:
+          BUNDLE_ID: ${{ inputs.bundle_id || 'io.faceunlock.app' }}
+        run: |
+          chmod +x ios/scripts/build_unsigned_ipa.sh
+          ios/scripts/build_unsigned_ipa.sh
+
+      - name: Validate signed-build secrets
+        if: ${{ (inputs.build_type || 'unsigned-jb') == 'signed-development' }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          test -n "$BUILD_CERTIFICATE_BASE64" || { echo "Missing secret BUILD_CERTIFICATE_BASE64"; exit 10; }
+          test -n "$P12_PASSWORD" || { echo "Missing secret P12_PASSWORD"; exit 11; }
+          test -n "$BUILD_PROVISION_PROFILE_BASE64" || { echo "Missing secret BUILD_PROVISION_PROFILE_BASE64"; exit 12; }
+          test -n "$KEYCHAIN_PASSWORD" || { echo "Missing secret KEYCHAIN_PASSWORD"; exit 13; }
+
+      - name: Install Apple certificate and provisioning profile
+        if: ${{ (inputs.build_type || 'unsigned-jb') == 'signed-development' }}
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          PROFILE_PATH="$RUNNER_TEMP/build_pp.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/faceunlock-signing.keychain-db"
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERTIFICATE_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_PLIST")
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+          CODE_SIGN_IDENTITY_NAME=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n '1s/.*"\(.*\)"/\1/p')
+          test -n "$CODE_SIGN_IDENTITY_NAME" || { echo "No code-signing identity found in P12"; exit 14; }
+
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
+          echo "CODE_SIGN_IDENTITY_NAME=$CODE_SIGN_IDENTITY_NAME" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build signed development IPA
+        if: ${{ (inputs.build_type || 'unsigned-jb') == 'signed-development' }}
+        env:
+          BUNDLE_ID: ${{ inputs.bundle_id || 'io.faceunlock.app' }}
+        run: |
+          chmod +x ios/scripts/build_signed_ipa_ci.sh
+          ios/scripts/build_signed_ipa_ci.sh
+
+      - name: Inspect IPA and verify Info.plist
+        run: |
+          test -f ios/dist/FaceUnlock.ipa
+          unzip -t ios/dist/FaceUnlock.ipa
+          unzip -l ios/dist/FaceUnlock.ipa | sed -n '1,80p'
+          shasum -a 256 ios/dist/FaceUnlock.ipa | tee ios/dist/FaceUnlock.ipa.sha256
+
+          TEMP_INSPECT="$RUNNER_TEMP/inspect_ipa"
+          mkdir -p "$TEMP_INSPECT"
+          unzip -q ios/dist/FaceUnlock.ipa "Payload/FaceUnlock.app/Info.plist" -d "$TEMP_INSPECT"
+          PLIST_PATH="$TEMP_INSPECT/Payload/FaceUnlock.app/Info.plist"
+
+          echo "=== Dumping Info.plist ==="
+          plutil -p "$PLIST_PATH"
+
+          echo "=== Verifying Required Keys ==="
+          /usr/libexec/PlistBuddy -c 'Print :NSBluetoothAlwaysUsageDescription' "$PLIST_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :NSBluetoothPeripheralUsageDescription' "$PLIST_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$PLIST_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :NSFaceIDUsageDescription' "$PLIST_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$PLIST_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PLIST_PATH"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceUnlock-${{ inputs.build_type || 'unsigned-jb' }}-IPA
+          path: |
+            ios/dist/FaceUnlock.ipa
+            ios/dist/FaceUnlock.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup signing keychain
+        if: ${{ always() && (inputs.build_type || 'unsigned-jb') == 'signed-development' }}
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN_PATH:-}" && -f "${SIGNING_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH" || true
+          fi

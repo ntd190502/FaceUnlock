@@ -1,0 +1,7 @@
+<Window x:Class="FaceUnlock.Agent.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="FaceUnlock" Width="650" Height="720">
+<Grid Margin="20"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+<StackPanel><TextBlock Text="FaceUnlock for Windows" FontSize="26" FontWeight="Bold"/><TextBlock x:Name="Status" Margin="0,8,0,12" Text="Ready"/></StackPanel>
+<StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12"><Button Content="Start pairing" Click="Pair_Click" Margin="0,0,8,0" Padding="12,6"/><Button Content="Test online Face ID" Click="Online_Click" Margin="0,0,8,0" Padding="12,6"/><Button Content="Test BLE offline" Click="Ble_Click" Padding="12,6"/></StackPanel>
+<Image Grid.Row="2" x:Name="QrImage" Width="360" Height="360" Stretch="Uniform"/>
+<TextBox Grid.Row="3" x:Name="Log" Margin="0,12,0,0" AcceptsReturn="True" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+</Grid></Window>

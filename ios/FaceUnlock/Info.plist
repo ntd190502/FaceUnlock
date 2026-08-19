@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>FaceUnlock</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>UILaunchScreen</key><dict/>
+<key>NSFaceIDUsageDescription</key><string>Face ID confirms that you approve unlocking your paired computer.</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth is used for offline unlock requests from your paired computer.</string>
+<key>NSBluetoothPeripheralUsageDescription</key><string>Bluetooth is used for offline unlock requests from your paired computer.</string>
+<key>NSCameraUsageDescription</key><string>The camera scans pairing and offline fallback QR codes.</string>
+<key>CFBundleURLTypes</key>
+<array><dict>
+<key>CFBundleURLName</key><string>io.faceunlock.app</string>
+<key>CFBundleURLSchemes</key><array><string>faceunlock</string></array>
+</dict></array>
+<key>UIBackgroundModes</key><array><string>bluetooth-peripheral</string></array>
+</dict></plist>

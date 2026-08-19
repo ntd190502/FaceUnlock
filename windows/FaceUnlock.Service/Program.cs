@@ -1,0 +1,1 @@
+using FaceUnlock.Service; Host.CreateDefaultBuilder(args).UseWindowsService(o=>o.ServiceName="FaceUnlock Service").ConfigureServices(s=>s.AddHostedService<UnlockWorker>()).Build().Run();

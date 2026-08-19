@@ -1,0 +1,33 @@
+name: FaceUnlock
+options:
+  bundleIdPrefix: io.faceunlock
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: 14.0
+    SWIFT_VERSION: 5.0
+targets:
+  FaceUnlock:
+    type: application
+    platform: iOS
+    sources: [FaceUnlock]
+    info:
+      path: FaceUnlock/Info.plist
+      properties:
+        NSFaceIDUsageDescription: "Face ID confirms that you approve unlocking your paired computer."
+        NSBluetoothAlwaysUsageDescription: "Bluetooth is used for offline unlock requests from your paired computer."
+        NSBluetoothPeripheralUsageDescription: "Bluetooth is used for offline unlock requests from your paired computer."
+        NSCameraUsageDescription: "The camera scans pairing and offline fallback QR codes."
+        CFBundleURLTypes:
+          - CFBundleURLName: io.faceunlock.app
+            CFBundleURLSchemes:
+              - faceunlock
+        UIBackgroundModes:
+          - bluetooth-peripheral
+    entitlements:
+      path: FaceUnlock/FaceUnlock.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.faceunlock.app
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: "NO"

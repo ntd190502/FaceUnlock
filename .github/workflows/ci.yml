@@ -1,0 +1,124 @@
+name: CI - Windows & Hosting & Static Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows Projects (.NET 8)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: |
+          dotnet restore windows/FaceUnlock.Core/FaceUnlock.Core.csproj
+          dotnet restore windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj
+          dotnet restore windows/FaceUnlock.Service/FaceUnlock.Service.csproj
+          dotnet restore windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
+
+      - name: Build FaceUnlock.Core (Release)
+        run: dotnet build windows/FaceUnlock.Core/FaceUnlock.Core.csproj --configuration Release --no-restore
+
+      - name: Build FaceUnlock.Agent (Release)
+        run: dotnet build windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj --configuration Release --no-restore
+
+      - name: Build FaceUnlock.Service (Release)
+        run: dotnet build windows/FaceUnlock.Service/FaceUnlock.Service.csproj --configuration Release --no-restore
+
+      - name: Run BLE framing self-test
+        run: dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore
+
+      - name: Verify BLE framing source is compiled
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "windows/FaceUnlock.Core/BleFrameCodec.cs")) { throw "Missing Windows BleFrameCodec.cs" }
+          if (-not (Select-String -Path "windows/FaceUnlock.Core/BleScanner.cs" -Pattern "BleFrameCodec" -Quiet)) { throw "BleScanner does not use BleFrameCodec" }
+
+  lint-hosting:
+    name: Lint Hosting PHP & Static Source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo, pdo_mysql, curl, openssl
+
+      - name: Check required hosting files
+        run: |
+          test -f hosting/schema.sql
+          test -f hosting/config.example.php
+          test -f hosting/public/index.php
+          test -f hosting/src/Auth.php
+          test -f hosting/src/Crypto.php
+          test -f hosting/src/Database.php
+          test -f hosting/src/TelegramClient.php
+          test -f hosting/src/Util.php
+
+      - name: Lint PHP files
+        run: |
+          php -l hosting/public/index.php
+          php -l hosting/config.example.php
+          for file in hosting/src/*.php; do
+            php -l "$file"
+          done
+
+      - name: Verify current notification architecture
+        run: |
+          if grep -R -n -E 'PushManager|ApnsClient|aps-environment|remote-notification' ios/FaceUnlock hosting/src; then
+            echo "Error: obsolete APNs runtime reference found"
+            exit 1
+          fi
+          grep -R -n 'TelegramClient' hosting/public/index.php
+          grep -R -n '/v1/unlock/pending' hosting/public/index.php ios/FaceUnlock/Network/APIClient.swift
+
+      - name: Verify BLE framing and secure token sources
+        run: |
+          test -f ios/FaceUnlock/BLE/BLEFrameCodec.swift
+          test -f windows/FaceUnlock.Core/BleFrameCodec.cs
+          test -f windows/FaceUnlock.BleFrameSelfTest/Program.cs
+          grep -n 'BLEFrameCodec' ios/FaceUnlock/BLE/BLEPeripheralManager.swift
+          grep -n 'BleFrameCodec' windows/FaceUnlock.Core/BleScanner.cs
+          grep -n 'KeychainHelper' ios/FaceUnlock/Config.swift
+          grep -n 'ProtectedData' windows/FaceUnlock.Core/ConfigStore.cs
+
+      - name: Verify manifest has no removed runtime files
+        run: |
+          if grep -E 'FaceUnlock/Push/PushManager.swift|hosting/src/ApnsClient.php' MANIFEST.txt; then
+            echo "Error: manifest still references removed APNs runtime files"
+            exit 1
+          fi
+
+  test-ble-framing-swift:
+    name: Test BLE Framing (Swift)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Compile and run BLE framing self-test
+        run: |
+          swiftc \
+            ios/FaceUnlock/BLE/BLEFrameCodec.swift \
+            ios/scripts/ble_frame_selftest.swift \
+            -o "$RUNNER_TEMP/ble_frame_selftest"
+          "$RUNNER_TEMP/ble_frame_selftest"
