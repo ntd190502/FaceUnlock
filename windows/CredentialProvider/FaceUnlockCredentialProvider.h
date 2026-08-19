@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <credentialprovider.h>
+#include <string>
 
 HRESULT CreateFaceUnlockProvider(REFIID riid, void** ppv);
 extern const CLSID CLSID_FaceUnlockProvider;
