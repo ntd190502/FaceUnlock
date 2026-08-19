@@ -2,31 +2,40 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var coordinator: UnlockCoordinator
-    @StateObject private var push = PushManager.shared
     @StateObject private var ble = BLEPeripheralManager.shared
     @State private var showScanner = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
-                Section("Computer") {
-                    LabeledContent("Name", value: AppConfig.current.pcName ?? "Not paired")
-                    LabeledContent("BLE", value: ble.stateText)
-                    LabeledContent("Push", value: push.tokenHex.isEmpty ? "Not registered" : "Registered")
+                Section(header: Text("Computer")) {
+                    HStack {
+                        Text("Name")
+                        Spacer()
+                        Text(AppConfig.current.pcName ?? "Not paired")
+                            .foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("BLE")
+                        Spacer()
+                        Text(ble.stateText)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 if let session = coordinator.pendingOnlineSessionID {
-                    Section("Unlock request") {
+                    Section(header: Text("Unlock request")) {
                         Text("A paired computer is requesting approval.")
                         Button("Unlock with Face ID") { Task { await coordinator.approveOnline(sessionID: session) } }
                             .disabled(coordinator.isBusy)
-                        Button("Reject", role: .destructive) { Task { await coordinator.rejectOnline(sessionID: session) } }
+                        Button("Reject") { Task { await coordinator.rejectOnline(sessionID: session) } }
+                            .foregroundColor(.red)
                     }
                 }
-                Section("Pair / offline fallback") {
+                Section(header: Text("Pair / offline fallback")) {
                     Button("Scan QR") { showScanner = true }
                     Button("Start Bluetooth advertising") { ble.startAdvertising() }
                 }
-                Section("Status") { Text(coordinator.lastMessage) }
+                Section(header: Text("Status")) { Text(coordinator.lastMessage) }
             }
             .navigationTitle("FaceUnlock")
             .sheet(isPresented: $showScanner) {
