@@ -11,6 +11,10 @@ struct FaceUnlockIpcResult {
 
 class FaceUnlockIpcClient {
 public:
+    static FaceUnlockIpcResult Ping(
+        DWORD timeoutMs = 3000
+    );
+
     static FaceUnlockIpcResult RequestUnlock(
         const std::wstring& requestId,
         const std::wstring& usage,
@@ -18,8 +22,23 @@ public:
         DWORD timeoutMs = 90000
     );
 
+    static FaceUnlockIpcResult ReserveGrant(
+        const std::wstring& requestId,
+        DWORD timeoutMs = 5000
+    );
+
+    static FaceUnlockIpcResult ReleaseGrant(
+        const std::wstring& requestId,
+        DWORD timeoutMs = 5000
+    );
+
     static FaceUnlockIpcResult ConsumeGrant(
         const std::wstring& requestId,
         DWORD timeoutMs = 5000
+    );
+
+    static FaceUnlockIpcResult CancelRequest(
+        const std::wstring& requestId,
+        DWORD timeoutMs = 3000
     );
 };

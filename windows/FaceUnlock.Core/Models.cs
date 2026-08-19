@@ -26,13 +26,18 @@ public sealed record LocalAuthResponse(
     string request_id,
     string status,
     string? message = null,
-    long? expires_at = null
+    long? expires_at = null,
+    string? service_version = null
 );
 
 public static class LocalAuthStatus
 {
+    public const string Ok = "ok";
     public const string Pending = "pending";
     public const string Approved = "approved";
+    public const string Reserved = "reserved";
+    public const string Consumed = "consumed";
+    public const string Released = "released";
     public const string Rejected = "rejected";
     public const string Timeout = "timeout";
     public const string Error = "error";

@@ -105,19 +105,39 @@ var reqJson = JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerial
 var reqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(reqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(reqParsed != null && reqParsed.command == "request_unlock" && reqParsed.request_id == "req-12345-abc", "LocalAuthRequest JSON serialization failure.");
 
-var consumeReq = new LocalAuthRequest(1, "consume_grant", "req-12345-abc");
-var consumeReqJson = JsonSerializer.Serialize(consumeReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-var consumeReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(consumeReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-Require(consumeReqParsed != null && consumeReqParsed.command == "consume_grant" && consumeReqParsed.request_id == "req-12345-abc", "consume_grant request serialization failure.");
+var pingReq = new LocalAuthRequest(1, "ping", "req-ping-123");
+var pingReqJson = JsonSerializer.Serialize(pingReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var pingReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(pingReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(pingReqParsed != null && pingReqParsed.command == "ping", "ping request serialization failure.");
+
+var pingResp = new LocalAuthResponse(1, "req-ping-123", LocalAuthStatus.Ok, "FaceUnlock Service is healthy", null, "1.1.0");
+var pingRespJson = JsonSerializer.Serialize(pingResp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var pingRespParsed = JsonSerializer.Deserialize<LocalAuthResponse>(pingRespJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(pingRespParsed != null && pingRespParsed.status == LocalAuthStatus.Ok && pingRespParsed.service_version == "1.1.0", "ping response serialization failure.");
+
+var reserveReq = new LocalAuthRequest(1, "reserve_grant", "req-12345-abc");
+var reserveReqJson = JsonSerializer.Serialize(reserveReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var reserveReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(reserveReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(reserveReqParsed != null && reserveReqParsed.command == "reserve_grant", "reserve_grant request serialization failure.");
+
+var releaseReq = new LocalAuthRequest(1, "release_grant", "req-12345-abc");
+var releaseReqJson = JsonSerializer.Serialize(releaseReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var releaseReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(releaseReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(releaseReqParsed != null && releaseReqParsed.command == "release_grant", "release_grant request serialization failure.");
+
+var cancelReq = new LocalAuthRequest(1, "cancel_request", "req-12345-abc");
+var cancelReqJson = JsonSerializer.Serialize(cancelReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var cancelReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(cancelReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(cancelReqParsed != null && cancelReqParsed.command == "cancel_request", "cancel_request serialization failure.");
 
 var resp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "Face ID approved", 1771234567);
 var respJson = JsonSerializer.Serialize(resp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 var respParsed = JsonSerializer.Deserialize<LocalAuthResponse>(respJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(respParsed != null && respParsed.status == LocalAuthStatus.Approved && respParsed.expires_at == 1771234567, "LocalAuthResponse JSON serialization failure.");
 
-var consumeResp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "grant_consumed", 1771234567);
+var consumeResp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Consumed, "grant_consumed", 1771234567);
 var consumeRespJson = JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 var consumeRespParsed = JsonSerializer.Deserialize<LocalAuthResponse>(consumeRespJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-Require(consumeRespParsed != null && consumeRespParsed.status == LocalAuthStatus.Approved && consumeRespParsed.message == "grant_consumed", "consume_grant response serialization failure.");
+Require(consumeRespParsed != null && consumeRespParsed.status == LocalAuthStatus.Consumed && consumeRespParsed.message == "grant_consumed", "consume_grant response serialization failure.");
 
 Console.WriteLine("LocalAuth IPC Model self-test PASS.");

@@ -13,6 +13,9 @@ namespace FaceUnlock.Service;
 public sealed class UnlockWorker : BackgroundService
 {
     private const string PipeName = "FaceUnlock.Auth.v1";
+    private const string ServiceVersion = "1.1.0";
+    private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
+
     private readonly ILogger<UnlockWorker> _log;
     private readonly ConfigStore _configStore;
     private readonly KeyStore _keyStore;
@@ -20,13 +23,26 @@ public sealed class UnlockWorker : BackgroundService
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private readonly string _logDir;
     private readonly string _serviceLogFile;
+    private readonly string _serviceLogBackupFile;
+
+    // Active auth session tracking for cancel_request
+    private readonly object _sessionSync = new();
+    private string? _currentActiveRequestId;
+    private CancellationTokenSource? _currentActiveCts;
+
+    private enum GrantState
+    {
+        Approved,
+        Reserved,
+        Consumed
+    }
 
     private sealed class AuthGrant
     {
         public required string RequestId { get; init; }
         public required DateTimeOffset ApprovedAt { get; init; }
         public required long ExpiresAt { get; init; }
-        public bool Consumed { get; set; }
+        public GrantState State { get; set; } = GrantState.Approved;
     }
 
     // In-memory grant cache: requestId -> AuthGrant
@@ -41,6 +57,7 @@ public sealed class UnlockWorker : BackgroundService
 
         _logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "logs");
         _serviceLogFile = Path.Combine(_logDir, "service.log");
+        _serviceLogBackupFile = Path.Combine(_logDir, "service.log.1");
 
         try
         {
@@ -56,8 +73,31 @@ public sealed class UnlockWorker : BackgroundService
     {
         try
         {
-            var line = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fffZ}] {message}{Environment.NewLine}";
-            File.AppendAllText(_serviceLogFile, line, Encoding.UTF8);
+            lock (_sessionSync)
+            {
+                if (File.Exists(_serviceLogFile))
+                {
+                    var fileInfo = new FileInfo(_serviceLogFile);
+                    if (fileInfo.Length >= MaxLogSizeBytes)
+                    {
+                        try
+                        {
+                            if (File.Exists(_serviceLogBackupFile))
+                            {
+                                File.Delete(_serviceLogBackupFile);
+                            }
+                            File.Move(_serviceLogFile, _serviceLogBackupFile);
+                        }
+                        catch
+                        {
+                            // Ignore rotation errors and keep logging
+                        }
+                    }
+                }
+
+                var line = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fffZ}] {message}{Environment.NewLine}";
+                File.AppendAllText(_serviceLogFile, line, Encoding.UTF8);
+            }
         }
         catch
         {
@@ -67,8 +107,8 @@ public sealed class UnlockWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _log.LogInformation("FaceUnlock Local Authentication Broker Service starting...");
-        AppendServiceLog("FaceUnlock Service started. Listening on named pipe: FaceUnlock.Auth.v1");
+        _log.LogInformation("FaceUnlock Local Authentication Broker Service starting (v{Version})...", ServiceVersion);
+        AppendServiceLog($"FaceUnlock Service v{ServiceVersion} started. Listening on named pipe: FaceUnlock.Auth.v1");
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -154,9 +194,46 @@ public sealed class UnlockWorker : BackgroundService
                     return;
                 }
 
-                if (request == null || string.IsNullOrWhiteSpace(request.request_id))
+                if (request == null)
                 {
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Invalid request structure")));
+                    return;
+                }
+
+                // Handle ping command (health check)
+                if (request.command == "ping")
+                {
+                    var reqId = string.IsNullOrWhiteSpace(request.request_id) ? Guid.NewGuid().ToString("N") : request.request_id;
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, reqId, LocalAuthStatus.Ok, "FaceUnlock Service is healthy", null, ServiceVersion), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(request.request_id))
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, Guid.NewGuid().ToString("N"), LocalAuthStatus.Error, "Missing request_id")));
+                    return;
+                }
+
+                // Handle cancel_request command
+                if (request.command == "cancel_request")
+                {
+                    var cancelResp = CancelRequest(request.request_id);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(cancelResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    return;
+                }
+
+                // Handle grant lifecycle commands
+                if (request.command == "reserve_grant")
+                {
+                    var reserveResp = ReserveGrant(request.request_id);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(reserveResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    return;
+                }
+
+                if (request.command == "release_grant")
+                {
+                    var releaseResp = ReleaseGrant(request.request_id);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(releaseResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     return;
                 }
 
@@ -164,6 +241,13 @@ public sealed class UnlockWorker : BackgroundService
                 {
                     var consumeResp = ConsumeGrant(request.request_id);
                     await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    return;
+                }
+
+                if (request.command == "grant_status")
+                {
+                    var statusResp = GetGrantStatus(request.request_id);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(statusResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     return;
                 }
 
@@ -196,15 +280,108 @@ public sealed class UnlockWorker : BackgroundService
         }
     }
 
+    private LocalAuthResponse CancelRequest(string requestId)
+    {
+        lock (_sessionSync)
+        {
+            if (_currentActiveRequestId == requestId && _currentActiveCts != null)
+            {
+                try
+                {
+                    _currentActiveCts.Cancel();
+                    AppendServiceLog($"[CANCEL_REQUEST SUCCESS] request_id={requestId} active auth cancelled");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication request cancelled");
+                }
+                catch (Exception ex)
+                {
+                    AppendServiceLog($"[CANCEL_REQUEST ERROR] request_id={requestId} error={ex.Message}");
+                }
+            }
+        }
+
+        // Also release any active grant for this request_id
+        lock (_activeGrants)
+        {
+            _activeGrants.Remove(requestId);
+        }
+
+        AppendServiceLog($"[CANCEL_REQUEST ACK] request_id={requestId}");
+        return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Request cancelled or not active");
+    }
+
+    private LocalAuthResponse ReserveGrant(string requestId)
+    {
+        lock (_activeGrants)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            PruneExpiredGrants(now);
+
+            if (!_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                AppendServiceLog($"[RESERVE_GRANT NOT_FOUND] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
+            }
+
+            if (grant.ExpiresAt < now)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[RESERVE_GRANT EXPIRED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired (>30s)");
+            }
+
+            if (grant.State == GrantState.Consumed)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[RESERVE_GRANT CONSUMED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
+            }
+
+            grant.State = GrantState.Reserved;
+            AppendServiceLog($"[RESERVE_GRANT SUCCESS] request_id={requestId}");
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Reserved, "grant_reserved", grant.ExpiresAt);
+        }
+    }
+
+    private LocalAuthResponse ReleaseGrant(string requestId)
+    {
+        lock (_activeGrants)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            PruneExpiredGrants(now);
+
+            if (!_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                AppendServiceLog($"[RELEASE_GRANT NOT_FOUND] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
+            }
+
+            if (grant.ExpiresAt < now)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[RELEASE_GRANT EXPIRED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired (>30s)");
+            }
+
+            if (grant.State == GrantState.Consumed)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[RELEASE_GRANT ALREADY_CONSUMED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
+            }
+
+            // Return grant to Approved state so user can retry password within remaining TTL
+            grant.State = GrantState.Approved;
+            AppendServiceLog($"[RELEASE_GRANT SUCCESS] request_id={requestId} returned to Approved state, expires_in={grant.ExpiresAt - now}s");
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_released", grant.ExpiresAt);
+        }
+    }
+
     private LocalAuthResponse ConsumeGrant(string requestId)
     {
         lock (_activeGrants)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-            // Prune expired grants
-            var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < now).Select(kvp => kvp.Key).ToList();
-            foreach (var k in expiredKeys) _activeGrants.Remove(k);
+            PruneExpiredGrants(now);
 
             if (!_activeGrants.TryGetValue(requestId, out var grant))
             {
@@ -212,7 +389,7 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or already consumed");
             }
 
-            if (grant.Consumed)
+            if (grant.State == GrantState.Consumed)
             {
                 _activeGrants.Remove(requestId);
                 AppendServiceLog($"[CONSUME_GRANT ALREADY_CONSUMED] request_id={requestId}");
@@ -227,11 +404,47 @@ public sealed class UnlockWorker : BackgroundService
             }
 
             // Grant is valid: consume immediately and remove
-            grant.Consumed = true;
+            grant.State = GrantState.Consumed;
             _activeGrants.Remove(requestId);
             AppendServiceLog($"[CONSUME_GRANT SUCCESS] request_id={requestId}");
-            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_consumed", grant.ExpiresAt);
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Consumed, "grant_consumed", grant.ExpiresAt);
         }
+    }
+
+    private LocalAuthResponse GetGrantStatus(string requestId)
+    {
+        lock (_activeGrants)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            PruneExpiredGrants(now);
+
+            if (!_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
+            }
+
+            if (grant.ExpiresAt < now)
+            {
+                _activeGrants.Remove(requestId);
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired");
+            }
+
+            var statusStr = grant.State switch
+            {
+                GrantState.Approved => LocalAuthStatus.Approved,
+                GrantState.Reserved => LocalAuthStatus.Reserved,
+                GrantState.Consumed => LocalAuthStatus.Consumed,
+                _ => LocalAuthStatus.Error
+            };
+
+            return new LocalAuthResponse(1, requestId, statusStr, "Grant active", grant.ExpiresAt);
+        }
+    }
+
+    private void PruneExpiredGrants(long nowSec)
+    {
+        var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < nowSec).Select(kvp => kvp.Key).ToList();
+        foreach (var k in expiredKeys) _activeGrants.Remove(k);
     }
 
     private async Task<LocalAuthResponse> ProcessAuthRequestAsync(LocalAuthRequest req, StreamWriter writer, CancellationToken stoppingToken)
@@ -245,6 +458,14 @@ public sealed class UnlockWorker : BackgroundService
         {
             AppendServiceLog($"[BUSY] request_id={requestId} - another authentication is in progress");
             return new LocalAuthResponse(1, requestId, LocalAuthStatus.Busy, "Another authentication request is in progress");
+        }
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+        lock (_sessionSync)
+        {
+            _currentActiveRequestId = requestId;
+            _currentActiveCts = linkedCts;
         }
 
         try
@@ -268,12 +489,11 @@ public sealed class UnlockWorker : BackgroundService
             try
             {
                 _log.LogInformation("Attempting online unlock for request {RequestId}...", requestId);
-                var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, stoppingToken);
+                var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, linkedCts.Token);
 
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                    // Enforce local 30-second TTL
                     var localGrantExp = RecordGrant(requestId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
                     return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Online service", localGrantExp);
@@ -284,6 +504,11 @@ public sealed class UnlockWorker : BackgroundService
                     AppendServiceLog($"[{onlineResp.Status.ToUpperInvariant()}] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s");
                     return new LocalAuthResponse(1, requestId, onlineResp.Status, onlineResp.Message);
                 }
+            }
+            catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            {
+                AppendServiceLog($"[CANCELLED] request_id={requestId} online flow cancelled by user");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication cancelled by user");
             }
             catch (Exception ex)
             {
@@ -297,12 +522,11 @@ public sealed class UnlockWorker : BackgroundService
                 _log.LogInformation("Attempting BLE offline unlock for request {RequestId}...", requestId);
                 await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Scanning for iPhone via BLE..."), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
-                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, stoppingToken);
+                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, linkedCts.Token);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
-                    // Enforce local 30-second TTL
                     var localGrantExp = RecordGrant(requestId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
                     return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Bluetooth LE", localGrantExp);
@@ -313,6 +537,11 @@ public sealed class UnlockWorker : BackgroundService
                     return new LocalAuthResponse(1, requestId, bleResp.Status, bleResp.Message ?? "BLE authentication failed");
                 }
             }
+            catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+            {
+                AppendServiceLog($"[CANCELLED] request_id={requestId} BLE flow cancelled by user");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication cancelled by user");
+            }
             catch (Exception ex)
             {
                 _log.LogError(ex, "BLE offline unlock failed for request {RequestId}", requestId);
@@ -322,6 +551,14 @@ public sealed class UnlockWorker : BackgroundService
         }
         finally
         {
+            lock (_sessionSync)
+            {
+                if (_currentActiveRequestId == requestId)
+                {
+                    _currentActiveRequestId = null;
+                    _currentActiveCts = null;
+                }
+            }
             _authLock.Release();
         }
     }
@@ -429,16 +666,14 @@ public sealed class UnlockWorker : BackgroundService
             var nowSec = now.ToUnixTimeSeconds();
             var expiresAt = nowSec + 30; // Strictly 30 seconds local TTL
 
-            // Prune expired grants
-            var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < nowSec).Select(kvp => kvp.Key).ToList();
-            foreach (var k in expiredKeys) _activeGrants.Remove(k);
+            PruneExpiredGrants(nowSec);
 
             _activeGrants[requestId] = new AuthGrant
             {
                 RequestId = requestId,
                 ApprovedAt = now,
                 ExpiresAt = expiresAt,
-                Consumed = false
+                State = GrantState.Approved
             };
 
             return expiresAt;

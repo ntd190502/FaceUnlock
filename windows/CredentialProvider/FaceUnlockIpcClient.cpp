@@ -103,6 +103,108 @@ static HANDLE ConnectPipeWithTimeout(DWORD timeoutMs, FaceUnlockIpcResult& outEr
     }
 }
 
+static FaceUnlockIpcResult ExecuteSingleCommand(
+    const std::string& jsonRequest,
+    const std::string& successStatus,
+    DWORD timeoutMs)
+{
+    FaceUnlockIpcResult result = { false, L"error", L"Failed to connect to FaceUnlock Service", 0 };
+
+    HANDLE hPipe = ConnectPipeWithTimeout(timeoutMs, result);
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        return result;
+    }
+
+    DWORD bytesWritten = 0;
+    BOOL writeOk = WriteFile(
+        hPipe,
+        jsonRequest.c_str(),
+        static_cast<DWORD>(jsonRequest.length()),
+        &bytesWritten,
+        nullptr
+    );
+
+    if (!writeOk) {
+        CloseHandle(hPipe);
+        result.status = L"error";
+        result.message = L"Failed to send request to FaceUnlock Service";
+        return result;
+    }
+
+    std::string responseBuffer;
+    char buffer[1024];
+    DWORD startTick = GetTickCount();
+
+    while (true) {
+        DWORD bytesRead = 0;
+        BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+        if (!readOk || bytesRead == 0) {
+            break;
+        }
+
+        buffer[bytesRead] = '\0';
+        responseBuffer += buffer;
+
+        size_t newlinePos = responseBuffer.find('\n');
+        if (newlinePos != std::string::npos) {
+            std::string line = responseBuffer.substr(0, newlinePos);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+
+            std::string status = ExtractJsonField(line, "status");
+            std::string msg = ExtractJsonField(line, "message");
+            long long exp = ExtractJsonLong(line, "expires_at");
+
+            result.status = Utf8ToUtf16(status);
+            result.message = Utf8ToUtf16(msg);
+            result.expires_at = exp;
+            result.ok = (status == successStatus);
+
+            CloseHandle(hPipe);
+            return result;
+        }
+
+        if (GetTickCount() - startTick >= timeoutMs) {
+            result.status = L"timeout";
+            result.message = L"Timed out waiting for response";
+            break;
+        }
+    }
+
+    CloseHandle(hPipe);
+    return result;
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::Ping(DWORD timeoutMs) {
+    std::string json = "{\"version\":1,\"command\":\"ping\"}\n";
+    return ExecuteSingleCommand(json, "ok", timeoutMs);
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::ReserveGrant(const std::wstring& requestId, DWORD timeoutMs) {
+    std::string reqIdUtf8 = EscapeJson(Utf16ToUtf8(requestId));
+    std::string json = "{\"version\":1,\"command\":\"reserve_grant\",\"request_id\":\"" + reqIdUtf8 + "\"}\n";
+    return ExecuteSingleCommand(json, "reserved", timeoutMs);
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::ReleaseGrant(const std::wstring& requestId, DWORD timeoutMs) {
+    std::string reqIdUtf8 = EscapeJson(Utf16ToUtf8(requestId));
+    std::string json = "{\"version\":1,\"command\":\"release_grant\",\"request_id\":\"" + reqIdUtf8 + "\"}\n";
+    return ExecuteSingleCommand(json, "approved", timeoutMs);
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::ConsumeGrant(const std::wstring& requestId, DWORD timeoutMs) {
+    std::string reqIdUtf8 = EscapeJson(Utf16ToUtf8(requestId));
+    std::string json = "{\"version\":1,\"command\":\"consume_grant\",\"request_id\":\"" + reqIdUtf8 + "\"}\n";
+    return ExecuteSingleCommand(json, "consumed", timeoutMs);
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::CancelRequest(const std::wstring& requestId, DWORD timeoutMs) {
+    std::string reqIdUtf8 = EscapeJson(Utf16ToUtf8(requestId));
+    std::string json = "{\"version\":1,\"command\":\"cancel_request\",\"request_id\":\"" + reqIdUtf8 + "\"}\n";
+    return ExecuteSingleCommand(json, "cancelled", timeoutMs);
+}
+
 FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
     const std::wstring& requestId,
     const std::wstring& usage,
@@ -181,7 +283,7 @@ FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
                     CloseHandle(hPipe);
                     return result;
                 } else if (status != "pending") {
-                    // Final non-approved status (rejected, timeout, error, not_paired, busy, etc.)
+                    // Final non-approved status (rejected, timeout, error, not_paired, busy, cancelled, etc.)
                     result.ok = false;
                     CloseHandle(hPipe);
                     return result;
@@ -194,82 +296,6 @@ FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
         if (GetTickCount() - startTick >= timeoutMs) {
             result.status = L"timeout";
             result.message = L"Timed out waiting for Face ID response";
-            break;
-        }
-    }
-
-    CloseHandle(hPipe);
-    return result;
-}
-
-FaceUnlockIpcResult FaceUnlockIpcClient::ConsumeGrant(
-    const std::wstring& requestId,
-    DWORD timeoutMs)
-{
-    FaceUnlockIpcResult result = { false, L"error", L"Failed to connect to FaceUnlock Service", 0 };
-
-    HANDLE hPipe = ConnectPipeWithTimeout(timeoutMs, result);
-    if (hPipe == INVALID_HANDLE_VALUE) {
-        return result;
-    }
-
-    // Prepare JSON Request
-    std::string reqIdUtf8 = EscapeJson(Utf16ToUtf8(requestId));
-    std::string jsonRequest = "{\"version\":1,\"command\":\"consume_grant\",\"request_id\":\"" + reqIdUtf8 + "\"}\n";
-
-    DWORD bytesWritten = 0;
-    BOOL writeOk = WriteFile(
-        hPipe,
-        jsonRequest.c_str(),
-        static_cast<DWORD>(jsonRequest.length()),
-        &bytesWritten,
-        nullptr
-    );
-
-    if (!writeOk) {
-        CloseHandle(hPipe);
-        result.status = L"error";
-        result.message = L"Failed to send consume_grant request";
-        return result;
-    }
-
-    std::string responseBuffer;
-    char buffer[1024];
-    DWORD startTick = GetTickCount();
-
-    while (true) {
-        DWORD bytesRead = 0;
-        BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-        if (!readOk || bytesRead == 0) {
-            break;
-        }
-
-        buffer[bytesRead] = '\0';
-        responseBuffer += buffer;
-
-        size_t newlinePos = responseBuffer.find('\n');
-        if (newlinePos != std::string::npos) {
-            std::string line = responseBuffer.substr(0, newlinePos);
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
-            }
-
-            std::string status = ExtractJsonField(line, "status");
-            std::string msg = ExtractJsonField(line, "message");
-            long long exp = ExtractJsonLong(line, "expires_at");
-
-            result.status = Utf8ToUtf16(status);
-            result.message = Utf8ToUtf16(msg);
-            result.expires_at = exp;
-            result.ok = (status == "approved");
-
-            CloseHandle(hPipe);
-            return result;
-        }
-
-        if (GetTickCount() - startTick >= timeoutMs) {
-            result.status = L"timeout";
-            result.message = L"Timed out waiting for consume_grant response";
             break;
         }
     }

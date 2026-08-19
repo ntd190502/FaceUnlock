@@ -1,0 +1,87 @@
+name: Build Complete FaceUnlock Windows Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    name: Build Windows Release Package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup MSVC & CMake
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Publish FaceUnlock.Agent x64
+        shell: pwsh
+        run: |
+          dotnet publish windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o windows/dist/publish-agent
+
+      - name: Publish FaceUnlock.Service x64
+        shell: pwsh
+        run: |
+          dotnet publish windows/FaceUnlock.Service/FaceUnlock.Service.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o windows/dist/publish-service
+
+      - name: Build FaceUnlockCredentialProvider.dll x64
+        shell: pwsh
+        run: |
+          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -G "Visual Studio 17 2022" -A x64
+          cmake --build windows/CredentialProvider/build --config Release
+
+      - name: Prepare Installer Staging Directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path windows/installer/bin -Force
+          Copy-Item windows/dist/publish-agent/FaceUnlock.Agent.exe windows/installer/bin/
+          Copy-Item windows/dist/publish-service/FaceUnlock.Service.exe windows/installer/bin/
+          Copy-Item windows/dist/publish-agent/FaceUnlock.Core.dll windows/installer/bin/ -ErrorAction SilentlyContinue
+          Copy-Item windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll windows/installer/bin/
+          Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/
+
+          # Also prepare Portable directory
+          New-Item -ItemType Directory -Path windows/dist/Portable -Force
+          Copy-Item windows/installer/bin/* windows/dist/Portable/
+
+      - name: Compile Inno Setup Installer
+        uses: Minisug/inno-setup-action@v1.2.0
+        with:
+          path: windows/installer/FaceUnlock.iss
+          options: /O+windows/dist
+
+      - name: Generate SHA256 Checksums
+        shell: pwsh
+        run: |
+          cd windows/dist
+          Get-FileHash FaceUnlock-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Out-File -Encoding utf8 FaceUnlock-Setup.exe.sha256.txt
+          Get-Content FaceUnlock-Setup.exe.sha256.txt
+
+      - name: Upload FaceUnlock-Windows-Release-x64 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceUnlock-Windows-Release-x64
+          path: |
+            windows/dist/FaceUnlock-Setup.exe
+            windows/dist/FaceUnlock-Setup.exe.sha256.txt
+            windows/dist/Portable/*

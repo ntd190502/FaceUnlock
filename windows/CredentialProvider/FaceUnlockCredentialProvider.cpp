@@ -1,6 +1,10 @@
 #include "FaceUnlockCredentialProvider.h"
 #include "FaceUnlockIpcClient.h"
 #include <new>
+#include <vector>
+#include <string>
+#include <thread>
+#include <mutex>
 #include <strsafe.h>
 #include <shlwapi.h>
 #include <wincred.h>
@@ -36,6 +40,83 @@ static const FieldDef s_Fields[FID_NUM_FIELDS] = {
     { FID_PASSWORD,   CPFT_PASSWORD_TEXT,  L"Windows Password" }
 };
 
+enum class WindowsAccountType {
+    Local,
+    MicrosoftAccount,
+    Domain,
+    AzureAD,
+    Unknown
+};
+
+static WindowsAccountType DetectAccountType(const std::wstring& username, const std::wstring& sid) {
+    if (username.find(L"MicrosoftAccount\\") == 0 || username.find(L"@") != std::string::npos) {
+        return WindowsAccountType::MicrosoftAccount;
+    }
+    if (username.find(L"AzureAD\\") == 0) {
+        return WindowsAccountType::AzureAD;
+    }
+    size_t slashPos = username.find(L"\\");
+    if (slashPos != std::string::npos) {
+        std::wstring domain = username.substr(0, slashPos);
+        WCHAR machineName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
+        DWORD size = ARRAYSIZE(machineName);
+        GetComputerNameW(machineName, &size);
+        if (_wcsicmp(domain.c_str(), machineName) == 0 || _wcsicmp(domain.c_str(), L".") == 0) {
+            return WindowsAccountType::Local;
+        }
+        return WindowsAccountType::Domain;
+    }
+    return WindowsAccountType::Local;
+}
+
+static const char* AccountTypeToString(WindowsAccountType type) {
+    switch (type) {
+    case WindowsAccountType::Local: return "Local";
+    case WindowsAccountType::MicrosoftAccount: return "MicrosoftAccount";
+    case WindowsAccountType::Domain: return "Domain";
+    case WindowsAccountType::AzureAD: return "AzureAD";
+    default: return "Unknown";
+    }
+}
+
+// Safe minimal diagnostic logging with size rotation (max 2 MB)
+static void AppendCpLog(const std::string& message) {
+    try {
+        WCHAR appData[MAX_PATH] = { 0 };
+        if (GetEnvironmentVariableW(L"ProgramData", appData, ARRAYSIZE(appData)) == 0) {
+            StringCchCopyW(appData, ARRAYSIZE(appData), L"C:\\ProgramData");
+        }
+        std::wstring logDir = std::wstring(appData) + L"\\FaceUnlock\\logs";
+        CreateDirectoryW(logDir.c_str(), nullptr);
+        std::wstring logPath = logDir + L"\\credentialprovider.log";
+        std::wstring logBackupPath = logDir + L"\\credentialprovider.log.1";
+
+        HANDLE hFile = CreateFileW(logPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER fileSize;
+            if (GetFileSizeEx(hFile, &fileSize) && fileSize.QuadPart >= 2 * 1024 * 1024) {
+                CloseHandle(hFile);
+                DeleteFileW(logBackupPath.c_str());
+                MoveFileW(logPath.c_str(), logBackupPath.c_str());
+                hFile = CreateFileW(logPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            }
+            if (hFile != INVALID_HANDLE_VALUE) {
+                SetFilePointer(hFile, 0, nullptr, FILE_END);
+                SYSTEMTIME st;
+                GetSystemTime(&st);
+                char timestamp[64];
+                StringCchPrintfA(timestamp, ARRAYSIZE(timestamp), "[%04u-%02u-%02u %02u:%02u:%02u.%03uZ] ",
+                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+                DWORD written = 0;
+                WriteFile(hFile, timestamp, static_cast<DWORD>(strlen(timestamp)), &written, nullptr);
+                WriteFile(hFile, message.c_str(), static_cast<DWORD>(message.length()), &written, nullptr);
+                WriteFile(hFile, "\r\n", 2, &written, nullptr);
+                CloseHandle(hFile);
+            }
+        }
+    } catch (...) {}
+}
+
 static HRESULT DuplicateString(PCWSTR src, PWSTR* dst) {
     if (!dst) return E_POINTER;
     *dst = nullptr;
@@ -54,25 +135,67 @@ static HRESULT DuplicateString(PCWSTR src, PWSTR* dst) {
     return S_OK;
 }
 
-class FaceUnlockCredential final : public ICredentialProviderCredential {
+class FaceUnlockCredential final : public ICredentialProviderCredential2 {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
     ICredentialProviderCredentialEvents* events_ = nullptr;
     WCHAR statusMessage_[256] = L"Ready";
     WCHAR username_[256] = { 0 };
+    WCHAR userSid_[128] = { 0 };
+    WCHAR userQualifiedName_[256] = { 0 };
     WCHAR password_[256] = { 0 };
+    WindowsAccountType accountType_ = WindowsAccountType::Local;
+
+    std::mutex stateMutex_;
     bool faceIdApproved_ = false;
+    bool authInProgress_ = false;
+    std::wstring activeRequestId_;
     std::wstring approvedRequestId_;
 
 public:
-    FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) : usage_(cpus) {
-        DWORD userLen = ARRAYSIZE(username_);
-        GetUserNameW(username_, &userLen);
+    FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, PCWSTR sid, PCWSTR qualifiedUsername)
+        : usage_(cpus)
+    {
+        if (sid) StringCchCopyW(userSid_, ARRAYSIZE(userSid_), sid);
+        if (qualifiedUsername) {
+            StringCchCopyW(userQualifiedName_, ARRAYSIZE(userQualifiedName_), qualifiedUsername);
+            StringCchCopyW(username_, ARRAYSIZE(username_), qualifiedUsername);
+        } else if (sid) {
+            StringCchCopyW(username_, ARRAYSIZE(username_), sid);
+        } else {
+            // Fallback for scenario where no user array provided
+            DWORD userLen = ARRAYSIZE(username_);
+            GetUserNameW(username_, &userLen);
+        }
+
+        accountType_ = DetectAccountType(username_, userSid_);
+        char logMsg[512];
+        StringCchPrintfA(logMsg, ARRAYSIZE(logMsg), "Credential initialized: account_type=%s", AccountTypeToString(accountType_));
+        AppendCpLog(logMsg);
     }
 
     ~FaceUnlockCredential() {
+        CancelActiveAuth();
         SecureZeroMemory(password_, sizeof(password_));
         SecureZeroMemory(username_, sizeof(username_));
+        SecureZeroMemory(userSid_, sizeof(userSid_));
+        SecureZeroMemory(userQualifiedName_, sizeof(userQualifiedName_));
+    }
+
+    void CancelActiveAuth() {
+        std::wstring reqToCancel;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (authInProgress_ && !activeRequestId_.empty()) {
+                reqToCancel = activeRequestId_;
+                authInProgress_ = false;
+                activeRequestId_.clear();
+            }
+        }
+        if (!reqToCancel.empty()) {
+            FaceUnlockIpcClient::CancelRequest(reqToCancel, 2000);
+            AppendCpLog("Cancelled active background auth request");
+        }
     }
 
     // IUnknown
@@ -81,6 +204,10 @@ public:
         *ppv = nullptr;
         if (riid == IID_IUnknown || riid == IID_ICredentialProviderCredential) {
             *ppv = static_cast<ICredentialProviderCredential*>(this);
+            AddRef();
+            return S_OK;
+        } else if (riid == IID_ICredentialProviderCredential2) {
+            *ppv = static_cast<ICredentialProviderCredential2*>(this);
             AddRef();
             return S_OK;
         }
@@ -97,6 +224,14 @@ public:
         return r;
     }
 
+    // ICredentialProviderCredential2
+    IFACEMETHODIMP GetUserSid(PWSTR* ppszSid) override {
+        if (!ppszSid) return E_POINTER;
+        *ppszSid = nullptr;
+        if (userSid_[0] == L'\0') return E_NOTIMPL;
+        return DuplicateString(userSid_, ppszSid);
+    }
+
     // ICredentialProviderCredential
     IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* pcpce) override {
         events_ = pcpce;
@@ -111,10 +246,21 @@ public:
     IFACEMETHODIMP SetSelected(BOOL* pbAutoLogon) override {
         if (!pbAutoLogon) return E_POINTER;
         *pbAutoLogon = FALSE;
+        AppendCpLog("Tile selected");
         return S_OK;
     }
 
     IFACEMETHODIMP SetDeselected() override {
+        AppendCpLog("Tile deselected - releasing state and active auth");
+        CancelActiveAuth();
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        if (!approvedRequestId_.empty()) {
+            FaceUnlockIpcClient::ReleaseGrant(approvedRequestId_, 2000);
+            approvedRequestId_.clear();
+        }
+        faceIdApproved_ = false;
+        SecureZeroMemory(password_, sizeof(password_));
+        StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Ready");
         return S_OK;
     }
 
@@ -123,6 +269,7 @@ public:
         CREDENTIAL_PROVIDER_FIELD_STATE* pcpfs,
         CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* pcpfis) override {
         if (!pcpfs || !pcpfis) return E_POINTER;
+        std::lock_guard<std::mutex> lock(stateMutex_);
         switch (dwFieldID) {
         case FID_LARGE_TEXT:
         case FID_SMALL_TEXT:
@@ -131,7 +278,7 @@ public:
             return S_OK;
         case FID_SUBMIT:
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
-            *pcpfis = faceIdApproved_ ? CPFIS_NONE : CPFIS_FOCUSED;
+            *pcpfis = faceIdApproved_ ? CPFIS_NONE : (authInProgress_ ? CPFIS_NONE : CPFIS_FOCUSED);
             return S_OK;
         case FID_STATUS_TEXT:
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
@@ -153,6 +300,7 @@ public:
     IFACEMETHODIMP GetStringValue(DWORD dwFieldID, PWSTR* ppsz) override {
         if (!ppsz) return E_POINTER;
         *ppsz = nullptr;
+        std::lock_guard<std::mutex> lock(stateMutex_);
         switch (dwFieldID) {
         case FID_LARGE_TEXT:
             return DuplicateString(L"FaceUnlock", ppsz);
@@ -181,6 +329,7 @@ public:
 
     IFACEMETHODIMP GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) override {
         if (!pdwAdjacentTo) return E_POINTER;
+        std::lock_guard<std::mutex> lock(stateMutex_);
         if (dwFieldID == FID_SUBMIT) {
             *pdwAdjacentTo = faceIdApproved_ ? FID_PASSWORD : FID_STATUS_TEXT;
             return S_OK;
@@ -197,6 +346,7 @@ public:
     }
 
     IFACEMETHODIMP SetStringValue(DWORD dwFieldID, PCWSTR psz) override {
+        std::lock_guard<std::mutex> lock(stateMutex_);
         if (dwFieldID == FID_USERNAME) {
             if (psz) StringCchCopyW(username_, ARRAYSIZE(username_), psz);
             else username_[0] = L'\0';
@@ -234,90 +384,133 @@ public:
         pcpcs->rgbSerialization = nullptr;
         pcpcs->cbSerialization = 0;
         pcpcs->ulAuthenticationPackage = 0;
+        *ppszOptionalStatusText = nullptr;
+        *pcpsiOptionalStatusIcon = CPSI_NONE;
 
-        // Step 1: If Face ID is not yet approved, trigger Face ID gate authentication via Service
-        if (!faceIdApproved_) {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Waiting for iPhone Face ID...");
-            if (events_) {
-                events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        bool isApproved = false;
+        bool inProgress = false;
+        std::wstring approvedReq;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            isApproved = faceIdApproved_;
+            inProgress = authInProgress_;
+            approvedReq = approvedRequestId_;
+        }
+
+        // STEP 1: If Face ID is not approved yet, trigger non-blocking async worker thread
+        if (!isApproved) {
+            if (inProgress) {
+                // User clicked button while request is already running in background
+                *pcpsiOptionalStatusIcon = CPSI_WARNING;
+                DuplicateString(L"Waiting for iPhone Face ID approval...", ppszOptionalStatusText);
+                return S_OK;
             }
 
+            // Check account type compatibility
+            if (accountType_ == WindowsAccountType::AzureAD) {
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"AzureAD account not supported yet");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(L"This Windows account type is not supported by FaceUnlock yet.", ppszOptionalStatusText);
+                if (events_) events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+                return S_OK;
+            }
+
+            // Generate unique request ID
             GUID guid;
             CoCreateGuid(&guid);
             WCHAR guidStr[64] = { 0 };
             StringFromGUID2(guid, guidStr, ARRAYSIZE(guidStr));
+            std::wstring reqId = guidStr;
 
-            std::wstring requestId = guidStr;
-            std::wstring usageStr = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
-            std::wstring usernameStr = username_;
-
-            FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(requestId, usageStr, usernameStr, 90000);
-
-            if (ipcResult.ok && ipcResult.status == L"approved") {
-                faceIdApproved_ = true;
-                approvedRequestId_ = requestId;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID approved. Enter Windows password.");
-                *pcpsiOptionalStatusIcon = CPSI_SUCCESS;
-                DuplicateString(L"Face ID approved. Please enter your Windows password to unlock.", ppszOptionalStatusText);
-
-                // Update field visibility: reveal Username and Password fields
-                if (events_) {
-                    events_->SetFieldState(this, FID_USERNAME, CPFS_DISPLAY_IN_SELECTED_TILE);
-                    events_->SetFieldState(this, FID_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
-                    events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
-                }
-            } else if (ipcResult.status == L"rejected") {
-                faceIdApproved_ = false;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID rejected");
-                *pcpsiOptionalStatusIcon = CPSI_ERROR;
-                DuplicateString(L"Face ID authentication was rejected on iPhone.", ppszOptionalStatusText);
-            } else if (ipcResult.status == L"timeout") {
-                faceIdApproved_ = false;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock request timed out");
-                *pcpsiOptionalStatusIcon = CPSI_WARNING;
-                DuplicateString(L"FaceUnlock request timed out waiting for iPhone.", ppszOptionalStatusText);
-            } else if (ipcResult.status == L"not_paired") {
-                faceIdApproved_ = false;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is not paired");
-                *pcpsiOptionalStatusIcon = CPSI_WARNING;
-                DuplicateString(L"Please open FaceUnlock Agent on Windows to pair an iPhone first.", ppszOptionalStatusText);
-            } else if (ipcResult.status == L"service_not_running") {
-                faceIdApproved_ = false;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock Service is not running");
-                *pcpsiOptionalStatusIcon = CPSI_ERROR;
-                DuplicateString(L"FaceUnlock Service is not running. Please start the service.", ppszOptionalStatusText);
-            } else {
-                faceIdApproved_ = false;
-                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock error");
-                *pcpsiOptionalStatusIcon = CPSI_ERROR;
-                DuplicateString(
-                    ipcResult.message.empty() ? L"FaceUnlock authentication encountered an error." : ipcResult.message.c_str(),
-                    ppszOptionalStatusText
-                );
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                authInProgress_ = true;
+                activeRequestId_ = reqId;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Waiting for iPhone Face ID...");
             }
 
             if (events_) {
                 events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
             }
 
+            // Retain reference for async thread
+            this->AddRef();
+
+            std::wstring usageStr = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
+            std::wstring userStr = username_;
+
+            std::thread([this, reqId, usageStr, userStr]() {
+                AppendCpLog("Background async Face ID request started");
+                FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(reqId, usageStr, userStr, 90000);
+
+                bool success = false;
+                std::wstring finalStatus;
+
+                {
+                    std::lock_guard<std::mutex> lock(this->stateMutex_);
+                    if (this->activeRequestId_ == reqId) {
+                        this->authInProgress_ = false;
+                        if (ipcResult.ok && ipcResult.status == L"approved") {
+                            this->faceIdApproved_ = true;
+                            this->approvedRequestId_ = reqId;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"Face ID approved. Enter Windows password.");
+                            success = true;
+                        } else if (ipcResult.status == L"rejected") {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"Face ID rejected");
+                        } else if (ipcResult.status == L"timeout") {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"FaceUnlock request timed out");
+                        } else if (ipcResult.status == L"not_paired") {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"FaceUnlock is not paired");
+                        } else if (ipcResult.status == L"service_not_running") {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"FaceUnlock Service is not running");
+                        } else if (ipcResult.status == L"cancelled") {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"Face ID cancelled");
+                        } else {
+                            this->faceIdApproved_ = false;
+                            StringCchCopyW(this->statusMessage_, ARRAYSIZE(this->statusMessage_), L"FaceUnlock error");
+                        }
+                    }
+                }
+
+                if (this->events_) {
+                    if (success) {
+                        this->events_->SetFieldState(this, FID_USERNAME, CPFS_DISPLAY_IN_SELECTED_TILE);
+                        this->events_->SetFieldState(this, FID_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
+                    }
+                    this->events_->SetFieldString(this, FID_STATUS_TEXT, this->statusMessage_);
+                    this->events_->CredentialsChanged(0);
+                }
+
+                AppendCpLog("Background async Face ID request finished");
+                this->Release();
+            }).detach();
+
             return S_OK;
         }
 
-        // Step 2: Face ID was approved. Now user has entered Windows password.
+        // STEP 2: Face ID was approved. Now user has entered Windows password.
         if (password_[0] == L'\0') {
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
             DuplicateString(L"Please enter your Windows password.", ppszOptionalStatusText);
             return S_OK;
         }
 
-        // Step 3: Consume the one-time short-lived grant (30s TTL)
-        FaceUnlockIpcResult consumeResult = FaceUnlockIpcClient::ConsumeGrant(approvedRequestId_, 5000);
-        if (!consumeResult.ok) {
-            faceIdApproved_ = false;
-            approvedRequestId_.clear();
-            SecureZeroMemory(password_, sizeof(password_));
+        // STEP 3: Reserve the one-time short-lived grant (30s TTL)
+        FaceUnlockIpcResult reserveResult = FaceUnlockIpcClient::ReserveGrant(approvedReq, 5000);
+        if (!reserveResult.ok) {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                faceIdApproved_ = false;
+                approvedRequestId_.clear();
+                SecureZeroMemory(password_, sizeof(password_));
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Grant expired. Please Face ID again.");
+            }
 
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Grant expired. Please Face ID again.");
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
             DuplicateString(L"Face ID approval grant expired (>30s) or invalid. Please authenticate again.", ppszOptionalStatusText);
 
@@ -329,24 +522,13 @@ public:
             return S_OK;
         }
 
-        // Step 4: Serialize Windows Credential using CredPackAuthenticationBufferW (Negotiate / Kerberos / NTLM)
+        // STEP 4: Serialize Windows Credential using CredPackAuthenticationBufferW (Negotiate / Kerberos / NTLM)
         DWORD authPackage = 0;
         ULONG cbBuffer = 0;
 
-        // Retrieve Negotiate authentication package ID via LSA
         HANDLE hLsa = nullptr;
-        LSA_STRING lsaProcessName;
-        lsaProcessName.Buffer = const_cast<PCHAR>("FaceUnlockProvider");
-        lsaProcessName.Length = static_cast<USHORT>(strlen("FaceUnlockProvider"));
-        lsaProcessName.MaximumLength = lsaProcessName.Length + 1;
-
-        LSA_OPERATIONAL_MODE mode = 0;
-        NTSTATUS status = LsaRegisterLogonProcess(&lsaProcessName, &hLsa, &mode);
-        if (status != 0 || hLsa == nullptr) {
-            status = LsaConnectUntrusted(&hLsa);
-        }
-
-        if (status == 0 && hLsa != nullptr) {
+        NTSTATUS lsaStatus = LsaConnectUntrusted(&hLsa);
+        if (lsaStatus == 0 && hLsa != nullptr) {
             LSA_STRING pkgName;
             pkgName.Buffer = const_cast<PCHAR>(NEGOSSP_NAME_A);
             pkgName.Length = static_cast<USHORT>(strlen(NEGOSSP_NAME_A));
@@ -355,7 +537,14 @@ public:
             LsaDeregisterLogonProcess(hLsa);
         }
 
-        // Pack authentication buffer
+        if (authPackage == 0) {
+            AppendCpLog("LsaLookupAuthenticationPackage failed to find Negotiate package");
+            FaceUnlockIpcClient::ReleaseGrant(approvedReq, 3000);
+            SecureZeroMemory(password_, sizeof(password_));
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            return DuplicateString(L"Failed to locate Windows Negotiate authentication package.", ppszOptionalStatusText);
+        }
+
         CredPackAuthenticationBufferW(
             0,
             username_,
@@ -377,10 +566,15 @@ public:
                     // Immediately wipe in-memory plaintext password
                     SecureZeroMemory(password_, sizeof(password_));
 
-                    StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Signing in...");
+                    {
+                        std::lock_guard<std::mutex> lock(stateMutex_);
+                        StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Signing in...");
+                    }
+
                     if (events_) {
                         events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
                     }
+                    AppendCpLog("Packed Windows credential serialization successfully");
                     return S_OK;
                 } else {
                     CoTaskMemFree(rgb);
@@ -388,7 +582,8 @@ public:
             }
         }
 
-        // Secure wipe password on failure
+        // Secure wipe password and release reservation on failure
+        FaceUnlockIpcClient::ReleaseGrant(approvedReq, 3000);
         SecureZeroMemory(password_, sizeof(password_));
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
         *pcpsiOptionalStatusIcon = CPSI_ERROR;
@@ -404,22 +599,53 @@ public:
         *ppszOptionalStatusText = nullptr;
         *pcpsiOptionalStatusIcon = CPSI_NONE;
 
-        // Reset state after logon attempt result
-        faceIdApproved_ = false;
-        approvedRequestId_.clear();
-        SecureZeroMemory(password_, sizeof(password_));
+        std::wstring reqId;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            reqId = approvedRequestId_;
+            SecureZeroMemory(password_, sizeof(password_));
+        }
 
-        if (ntsStatus != 0) { // Non-success NTSTATUS
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Windows authentication failed");
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            DuplicateString(L"Windows password or authentication was incorrect.", ppszOptionalStatusText);
-        } else {
+        if (ntsStatus == 0) { // Windows authentication SUCCESS
+            AppendCpLog("Windows authentication SUCCESS - consuming grant");
+            if (!reqId.empty()) {
+                FaceUnlockIpcClient::ConsumeGrant(reqId, 3000);
+            }
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            faceIdApproved_ = false;
+            approvedRequestId_.clear();
             StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Ready");
+        } else { // Windows password incorrect or auth failed
+            AppendCpLog("Windows authentication FAILED - releasing grant reservation for retry");
+            bool stillValid = false;
+            if (!reqId.empty()) {
+                FaceUnlockIpcResult rel = FaceUnlockIpcClient::ReleaseGrant(reqId, 3000);
+                stillValid = (rel.ok && rel.status == L"approved");
+            }
+
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (stillValid) {
+                // User can retry password without re-triggering Face ID
+                faceIdApproved_ = true;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Windows password incorrect. Try again.");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(L"Windows password was incorrect. Please try again.", ppszOptionalStatusText);
+            } else {
+                // Grant expired or invalid - must Face ID again
+                faceIdApproved_ = false;
+                approvedRequestId_.clear();
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID approval expired. Authenticate again.");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(L"Windows password incorrect and Face ID approval expired. Please authenticate again.", ppszOptionalStatusText);
+            }
         }
 
         if (events_) {
-            events_->SetFieldState(this, FID_USERNAME, CPFS_HIDDEN);
-            events_->SetFieldState(this, FID_PASSWORD, CPFS_HIDDEN);
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (!faceIdApproved_) {
+                events_->SetFieldState(this, FID_USERNAME, CPFS_HIDDEN);
+                events_->SetFieldState(this, FID_PASSWORD, CPFS_HIDDEN);
+            }
             events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
         }
 
@@ -427,19 +653,23 @@ public:
     }
 };
 
-class Provider final : public ICredentialProvider {
+class Provider final : public ICredentialProvider, public ICredentialProviderSetUserArray {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
-    FaceUnlockCredential* credential_ = nullptr;
+    std::vector<FaceUnlockCredential*> credentials_;
 
 public:
     Provider() = default;
 
     ~Provider() {
-        if (credential_) {
-            credential_->Release();
-            credential_ = nullptr;
+        ClearCredentials();
+    }
+
+    void ClearCredentials() {
+        for (auto c : credentials_) {
+            if (c) c->Release();
         }
+        credentials_.clear();
     }
 
     // IUnknown
@@ -448,6 +678,10 @@ public:
         *ppv = nullptr;
         if (riid == IID_IUnknown || riid == IID_ICredentialProvider) {
             *ppv = static_cast<ICredentialProvider*>(this);
+            AddRef();
+            return S_OK;
+        } else if (riid == IID_ICredentialProviderSetUserArray) {
+            *ppv = static_cast<ICredentialProviderSetUserArray*>(this);
             AddRef();
             return S_OK;
         }
@@ -464,18 +698,52 @@ public:
         return r;
     }
 
+    // ICredentialProviderSetUserArray
+    IFACEMETHODIMP SetUserArray(ICredentialProviderUserArray* userArray) override {
+        ClearCredentials();
+        if (!userArray) return S_OK;
+
+        DWORD userCount = 0;
+        HRESULT hr = userArray->GetAccountOptions(nullptr); // Check interface validity
+        hr = userArray->GetCount(&userCount);
+        if (FAILED(hr) || userCount == 0) {
+            return S_OK;
+        }
+
+        for (DWORD i = 0; i < userCount; ++i) {
+            ICredentialProviderUser* pUser = nullptr;
+            hr = userArray->GetAt(i, &pUser);
+            if (SUCCEEDED(hr) && pUser != nullptr) {
+                PWSTR sid = nullptr;
+                PWSTR qualifiedName = nullptr;
+                pUser->GetSid(&sid);
+                pUser->GetStringValue(PKEY_Identity_QualifiedUserName, &qualifiedName);
+
+                auto cred = new(std::nothrow) FaceUnlockCredential(usage_, sid, qualifiedName);
+                if (cred) {
+                    credentials_.push_back(cred);
+                }
+
+                if (sid) CoTaskMemFree(sid);
+                if (qualifiedName) CoTaskMemFree(qualifiedName);
+                pUser->Release();
+            }
+        }
+
+        return S_OK;
+    }
+
     // ICredentialProvider
     IFACEMETHODIMP SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD) override {
         if (cpus != CPUS_LOGON && cpus != CPUS_UNLOCK_WORKSTATION) {
             return E_NOTIMPL;
         }
         usage_ = cpus;
-        if (credential_) {
-            credential_->Release();
-            credential_ = nullptr;
+        if (credentials_.empty()) {
+            auto cred = new(std::nothrow) FaceUnlockCredential(cpus, nullptr, nullptr);
+            if (cred) credentials_.push_back(cred);
         }
-        credential_ = new(std::nothrow) FaceUnlockCredential(cpus);
-        return credential_ ? S_OK : E_OUTOFMEMORY;
+        return S_OK;
     }
 
     IFACEMETHODIMP SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*) override {
@@ -518,7 +786,7 @@ public:
 
     IFACEMETHODIMP GetCredentialCount(DWORD* count, DWORD* pdwDefault, BOOL* pbAutoLogonWithDefault) override {
         if (!count || !pdwDefault || !pbAutoLogonWithDefault) return E_POINTER;
-        *count = (credential_ != nullptr) ? 1 : 0;
+        *count = static_cast<DWORD>(credentials_.size());
         *pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;
         *pbAutoLogonWithDefault = FALSE;
         return S_OK;
@@ -527,10 +795,10 @@ public:
     IFACEMETHODIMP GetCredentialAt(DWORD dwIndex, ICredentialProviderCredential** ppcpc) override {
         if (!ppcpc) return E_POINTER;
         *ppcpc = nullptr;
-        if (dwIndex != 0 || !credential_) return E_INVALIDARG;
+        if (dwIndex >= credentials_.size()) return E_INVALIDARG;
 
-        credential_->AddRef();
-        *ppcpc = credential_;
+        credentials_[dwIndex]->AddRef();
+        *ppcpc = credentials_[dwIndex];
         return S_OK;
     }
 };
