@@ -15,6 +15,7 @@ target_link_libraries(FaceUnlockCredentialProvider PRIVATE
     Credui
     Advapi32
     Shlwapi
+    Secur32
 )
 
 set_target_properties(FaceUnlockCredentialProvider PROPERTIES

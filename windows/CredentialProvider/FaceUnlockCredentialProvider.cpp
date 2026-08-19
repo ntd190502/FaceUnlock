@@ -3,6 +3,9 @@
 #include <new>
 #include <strsafe.h>
 #include <shlwapi.h>
+#include <wincred.h>
+#define SECURITY_WIN32
+#include <security.h>
 
 // {64D6E84B-4969-4B59-A11A-58C3D9FA0110}
 const CLSID CLSID_FaceUnlockProvider = {0x64d6e84b, 0x4969, 0x4b59, {0xa1, 0x1a, 0x58, 0xc3, 0xd9, 0xfa, 0x01, 0x10}};
@@ -12,7 +15,9 @@ enum FACEUNLOCK_FIELD_ID {
     FID_SMALL_TEXT = 1,
     FID_SUBMIT = 2,
     FID_STATUS_TEXT = 3,
-    FID_NUM_FIELDS = 4
+    FID_USERNAME = 4,
+    FID_PASSWORD = 5,
+    FID_NUM_FIELDS = 6
 };
 
 struct FieldDef {
@@ -22,10 +27,12 @@ struct FieldDef {
 };
 
 static const FieldDef s_Fields[FID_NUM_FIELDS] = {
-    { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"FaceUnlock" },
-    { FID_SMALL_TEXT, CPFT_SMALL_TEXT, L"Unlock with iPhone" },
-    { FID_SUBMIT,     CPFT_SUBMIT_BUTTON, L"Face ID" },
-    { FID_STATUS_TEXT, CPFT_SMALL_TEXT, L"Status" }
+    { FID_LARGE_TEXT, CPFT_LARGE_TEXT,     L"FaceUnlock" },
+    { FID_SMALL_TEXT, CPFT_SMALL_TEXT,     L"Unlock with iPhone" },
+    { FID_SUBMIT,     CPFT_SUBMIT_BUTTON,  L"Face ID" },
+    { FID_STATUS_TEXT, CPFT_SMALL_TEXT,    L"Status" },
+    { FID_USERNAME,   CPFT_EDIT_TEXT,      L"Username" },
+    { FID_PASSWORD,   CPFT_PASSWORD_TEXT,  L"Windows Password" }
 };
 
 static HRESULT DuplicateString(PCWSTR src, PWSTR* dst) {
@@ -51,9 +58,22 @@ class FaceUnlockCredential final : public ICredentialProviderCredential {
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
     ICredentialProviderCredentialEvents* events_ = nullptr;
     WCHAR statusMessage_[256] = L"Ready";
+    WCHAR username_[256] = { 0 };
+    WCHAR password_[256] = { 0 };
+    bool faceIdApproved_ = false;
+    std::wstring approvedRequestId_;
 
 public:
-    FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) : usage_(cpus) {}
+    FaceUnlockCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) : usage_(cpus) {
+        // Pre-fill username if available in environment
+        DWORD userLen = ARRAYSIZE(username_);
+        GetUserNameW(username_, &userLen);
+    }
+
+    ~FaceUnlockCredential() {
+        SecureZeroMemory(password_, sizeof(password_));
+        SecureZeroMemory(username_, sizeof(username_));
+    }
 
     // IUnknown
     IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -111,11 +131,19 @@ public:
             return S_OK;
         case FID_SUBMIT:
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
-            *pcpfis = CPFIS_FOCUSED;
+            *pcpfis = faceIdApproved_ ? CPFIS_NONE : CPFIS_FOCUSED;
             return S_OK;
         case FID_STATUS_TEXT:
             *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
             *pcpfis = CPFIS_NONE;
+            return S_OK;
+        case FID_USERNAME:
+            *pcpfs = faceIdApproved_ ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+            *pcpfis = CPFIS_NONE;
+            return S_OK;
+        case FID_PASSWORD:
+            *pcpfs = faceIdApproved_ ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
+            *pcpfis = faceIdApproved_ ? CPFIS_FOCUSED : CPFIS_NONE;
             return S_OK;
         default:
             return E_INVALIDARG;
@@ -134,6 +162,10 @@ public:
                 ppsz);
         case FID_STATUS_TEXT:
             return DuplicateString(statusMessage_, ppsz);
+        case FID_USERNAME:
+            return DuplicateString(username_, ppsz);
+        case FID_PASSWORD:
+            return DuplicateString(L"", ppsz);
         default:
             return E_INVALIDARG;
         }
@@ -150,7 +182,7 @@ public:
     IFACEMETHODIMP GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) override {
         if (!pdwAdjacentTo) return E_POINTER;
         if (dwFieldID == FID_SUBMIT) {
-            *pdwAdjacentTo = FID_STATUS_TEXT;
+            *pdwAdjacentTo = faceIdApproved_ ? FID_PASSWORD : FID_STATUS_TEXT;
             return S_OK;
         }
         return E_INVALIDARG;
@@ -164,8 +196,17 @@ public:
         return E_NOTIMPL;
     }
 
-    IFACEMETHODIMP SetStringValue(DWORD, PCWSTR) override {
-        return E_NOTIMPL;
+    IFACEMETHODIMP SetStringValue(DWORD dwFieldID, PCWSTR psz) override {
+        if (dwFieldID == FID_USERNAME) {
+            if (psz) StringCchCopyW(username_, ARRAYSIZE(username_), psz);
+            else username_[0] = L'\0';
+            return S_OK;
+        } else if (dwFieldID == FID_PASSWORD) {
+            if (psz) StringCchCopyW(password_, ARRAYSIZE(password_), psz);
+            else password_[0] = L'\0';
+            return S_OK;
+        }
+        return E_INVALIDARG;
     }
 
     IFACEMETHODIMP SetCheckboxValue(DWORD, BOOL) override {
@@ -188,80 +229,190 @@ public:
         if (!pcpgsr || !pcpcs || !ppszOptionalStatusText || !pcpsiOptionalStatusIcon)
             return E_POINTER;
 
-        // Phase B: Always return CPGSR_NO_CREDENTIAL_FINISHED (no Windows credential serialization yet)
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
         pcpcs->clsidCredentialProvider = CLSID_FaceUnlockProvider;
         pcpcs->rgbSerialization = nullptr;
         pcpcs->cbSerialization = 0;
         pcpcs->ulAuthenticationPackage = 0;
 
-        // 1. Update tile status to "Waiting for iPhone Face ID..."
-        StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Waiting for iPhone Face ID...");
-        if (events_) {
-            events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        // Step 1: If Face ID is not yet approved, trigger Face ID gate authentication via Service
+        if (!faceIdApproved_) {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Waiting for iPhone Face ID...");
+            if (events_) {
+                events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+            }
+
+            GUID guid;
+            CoCreateGuid(&guid);
+            WCHAR guidStr[64] = { 0 };
+            StringFromGUID2(guid, guidStr, ARRAYSIZE(guidStr));
+
+            std::wstring requestId = guidStr;
+            std::wstring usageStr = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
+            std::wstring usernameStr = username_;
+
+            FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(requestId, usageStr, usernameStr, 90000);
+
+            if (ipcResult.ok && ipcResult.status == L"approved") {
+                faceIdApproved_ = true;
+                approvedRequestId_ = requestId;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID approved. Enter Windows password.");
+                *pcpsiOptionalStatusIcon = CPSI_SUCCESS;
+                DuplicateString(L"Face ID approved. Please enter your Windows password to unlock.", ppszOptionalStatusText);
+
+                // Update field visibility: reveal Username and Password fields
+                if (events_) {
+                    events_->SetFieldState(this, FID_USERNAME, CPFS_DISPLAY_IN_SELECTED_TILE);
+                    events_->SetFieldState(this, FID_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
+                    events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+                }
+            } else if (ipcResult.status == L"rejected") {
+                faceIdApproved_ = false;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID rejected");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(L"Face ID authentication was rejected on iPhone.", ppszOptionalStatusText);
+            } else if (ipcResult.status == L"timeout") {
+                faceIdApproved_ = false;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock request timed out");
+                *pcpsiOptionalStatusIcon = CPSI_WARNING;
+                DuplicateString(L"FaceUnlock request timed out waiting for iPhone.", ppszOptionalStatusText);
+            } else if (ipcResult.status == L"not_paired") {
+                faceIdApproved_ = false;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is not paired");
+                *pcpsiOptionalStatusIcon = CPSI_WARNING;
+                DuplicateString(L"Please open FaceUnlock Agent on Windows to pair an iPhone first.", ppszOptionalStatusText);
+            } else if (ipcResult.status == L"service_not_running") {
+                faceIdApproved_ = false;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock Service is not running");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(L"FaceUnlock Service is not running. Please start the service.", ppszOptionalStatusText);
+            } else {
+                faceIdApproved_ = false;
+                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock error");
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                DuplicateString(
+                    ipcResult.message.empty() ? L"FaceUnlock authentication encountered an error." : ipcResult.message.c_str(),
+                    ppszOptionalStatusText
+                );
+            }
+
+            if (events_) {
+                events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+            }
+
+            return S_OK;
         }
 
-        // 2. Perform Named Pipe IPC Request to FaceUnlock.Service
-        GUID guid;
-        CoCreateGuid(&guid);
-        WCHAR guidStr[64] = { 0 };
-        StringFromGUID2(guid, guidStr, ARRAYSIZE(guidStr));
-
-        std::wstring requestId = guidStr;
-        std::wstring usageStr = (usage_ == CPUS_UNLOCK_WORKSTATION) ? L"unlock" : L"logon";
-        std::wstring username = L"";
-
-        FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(requestId, usageStr, username, 90000);
-
-        // 3. Map IPC result to UI status
-        if (ipcResult.ok && ipcResult.status == L"approved") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID approved");
-            *pcpsiOptionalStatusIcon = CPSI_SUCCESS;
-            DuplicateString(L"Face ID approved. (Windows credential serialization enabled in Phase C).", ppszOptionalStatusText);
-        } else if (ipcResult.status == L"rejected") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Face ID rejected");
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            DuplicateString(L"Face ID authentication was rejected on iPhone.", ppszOptionalStatusText);
-        } else if (ipcResult.status == L"timeout") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock request timed out");
+        // Step 2: Face ID was approved. Now user has entered Windows password.
+        if (password_[0] == L'\0') {
             *pcpsiOptionalStatusIcon = CPSI_WARNING;
-            DuplicateString(L"FaceUnlock request timed out waiting for iPhone.", ppszOptionalStatusText);
-        } else if (ipcResult.status == L"not_paired") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is not paired");
-            *pcpsiOptionalStatusIcon = CPSI_WARNING;
-            DuplicateString(L"Please open FaceUnlock Agent on Windows to pair an iPhone first.", ppszOptionalStatusText);
-        } else if (ipcResult.status == L"busy") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock is busy");
-            *pcpsiOptionalStatusIcon = CPSI_WARNING;
-            DuplicateString(L"Another FaceUnlock request is currently in progress.", ppszOptionalStatusText);
-        } else if (ipcResult.status == L"service_not_running") {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock Service is not running");
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            DuplicateString(L"FaceUnlock Service is not running. Please start the service.", ppszOptionalStatusText);
-        } else {
-            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"FaceUnlock error");
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            DuplicateString(
-                ipcResult.message.empty() ? L"FaceUnlock authentication encountered an error." : ipcResult.message.c_str(),
-                ppszOptionalStatusText
-            );
+            DuplicateString(L"Please enter your Windows password.", ppszOptionalStatusText);
+            return S_OK;
         }
 
-        if (events_) {
-            events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        // Step 3: Consume the one-time short-lived grant (30s TTL)
+        FaceUnlockIpcResult consumeResult = FaceUnlockIpcClient::ConsumeGrant(approvedRequestId_, 5000);
+        if (!consumeResult.ok) {
+            faceIdApproved_ = false;
+            approvedRequestId_.clear();
+            SecureZeroMemory(password_, sizeof(password_));
+
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Grant expired. Please Face ID again.");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            DuplicateString(L"Face ID approval grant expired (>30s) or invalid. Please authenticate again.", ppszOptionalStatusText);
+
+            if (events_) {
+                events_->SetFieldState(this, FID_USERNAME, CPFS_HIDDEN);
+                events_->SetFieldState(this, FID_PASSWORD, CPFS_HIDDEN);
+                events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+            }
+            return S_OK;
         }
 
-        return S_OK;
+        // Step 4: Serialize Windows Credential using CredPackAuthenticationBufferW (Negotiate / Kerberos / NTLM)
+        DWORD authPackage = 0;
+        ULONG cbBuffer = 0;
+
+        // Retrieve Negotiate authentication package ID
+        HANDLE hLsa = nullptr;
+        NTSTATUS status = LsaConnectUntrusted(&hLsa);
+        if (status == 0 && hLsa != nullptr) {
+            LSA_STRING pkgName;
+            pkgName.Buffer = const_cast<PCHAR>(NEGOSSP_NAME_A);
+            pkgName.Length = static_cast<USHORT>(strlen(NEGOSSP_NAME_A));
+            pkgName.MaximumLength = pkgName.Length + 1;
+            LsaLookupAuthenticationPackage(hLsa, &pkgName, &authPackage);
+            LsaDeregisterLogonProcess(hLsa);
+        }
+
+        // Pack authentication buffer
+        CredPackAuthenticationBufferW(
+            0,
+            username_,
+            password_,
+            nullptr,
+            &cbBuffer
+        );
+
+        if (cbBuffer > 0) {
+            auto rgb = static_cast<PBYTE>(CoTaskMemAlloc(cbBuffer));
+            if (rgb) {
+                if (CredPackAuthenticationBufferW(0, username_, password_, rgb, &cbBuffer)) {
+                    pcpcs->clsidCredentialProvider = CLSID_FaceUnlockProvider;
+                    pcpcs->ulAuthenticationPackage = authPackage;
+                    pcpcs->cbSerialization = cbBuffer;
+                    pcpcs->rgbSerialization = rgb;
+                    *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+
+                    // Immediately wipe in-memory plaintext password
+                    SecureZeroMemory(password_, sizeof(password_));
+
+                    StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Signing in...");
+                    if (events_) {
+                        events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+                    }
+                    return S_OK;
+                } else {
+                    CoTaskMemFree(rgb);
+                }
+            }
+        }
+
+        // Secure wipe password on failure
+        SecureZeroMemory(password_, sizeof(password_));
+        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+        *pcpsiOptionalStatusIcon = CPSI_ERROR;
+        return DuplicateString(L"Failed to pack Windows credentials.", ppszOptionalStatusText);
     }
 
     IFACEMETHODIMP ReportResult(
-        NTSTATUS,
-        NTSTATUS,
+        NTSTATUS ntsStatus,
+        NTSTATUS ntsSubstatus,
         PWSTR* ppszOptionalStatusText,
         CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) override {
         if (!ppszOptionalStatusText || !pcpsiOptionalStatusIcon) return E_POINTER;
         *ppszOptionalStatusText = nullptr;
         *pcpsiOptionalStatusIcon = CPSI_NONE;
+
+        // Reset state after logon attempt result
+        faceIdApproved_ = false;
+        approvedRequestId_.clear();
+        SecureZeroMemory(password_, sizeof(password_));
+
+        if (ntsStatus != 0) { // Non-success NTSTATUS
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Windows authentication failed");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            DuplicateString(L"Windows password or authentication was incorrect.", ppszOptionalStatusText);
+        } else {
+            StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Ready");
+        }
+
+        if (events_) {
+            events_->SetFieldState(this, FID_USERNAME, CPFS_HIDDEN);
+            events_->SetFieldState(this, FID_PASSWORD, CPFS_HIDDEN);
+            events_->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+        }
+
         return S_OK;
     }
 };

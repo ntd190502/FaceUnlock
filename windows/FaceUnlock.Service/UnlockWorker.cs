@@ -21,8 +21,16 @@ public sealed class UnlockWorker : BackgroundService
     private readonly string _logDir;
     private readonly string _serviceLogFile;
 
-    // In-memory grant cache: requestId -> (approvedAt, expiresAt)
-    private readonly Dictionary<string, (DateTimeOffset ApprovedAt, long ExpiresAt)> _activeGrants = new();
+    private sealed class AuthGrant
+    {
+        public required string RequestId { get; init; }
+        public required DateTimeOffset ApprovedAt { get; init; }
+        public required long ExpiresAt { get; init; }
+        public bool Consumed { get; set; }
+    }
+
+    // In-memory grant cache: requestId -> AuthGrant
+    private readonly Dictionary<string, AuthGrant> _activeGrants = new();
 
     public UnlockWorker(ILogger<UnlockWorker> log)
     {
@@ -152,6 +160,13 @@ public sealed class UnlockWorker : BackgroundService
                     return;
                 }
 
+                if (request.command == "consume_grant")
+                {
+                    var consumeResp = ConsumeGrant(request.request_id);
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    return;
+                }
+
                 if (request.command != "request_unlock")
                 {
                     await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, request.request_id, LocalAuthStatus.Error, $"Unsupported command: {request.command}")));
@@ -178,6 +193,44 @@ public sealed class UnlockWorker : BackgroundService
                     // Ignore write failures on closed pipe
                 }
             }
+        }
+    }
+
+    private LocalAuthResponse ConsumeGrant(string requestId)
+    {
+        lock (_activeGrants)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            // Prune expired grants
+            var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < now).Select(kvp => kvp.Key).ToList();
+            foreach (var k in expiredKeys) _activeGrants.Remove(k);
+
+            if (!_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                AppendServiceLog($"[CONSUME_GRANT NOT_FOUND] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or already consumed");
+            }
+
+            if (grant.Consumed)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[CONSUME_GRANT ALREADY_CONSUMED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
+            }
+
+            if (grant.ExpiresAt < now)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[CONSUME_GRANT EXPIRED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired (>30s)");
+            }
+
+            // Grant is valid: consume immediately and remove
+            grant.Consumed = true;
+            _activeGrants.Remove(requestId);
+            AppendServiceLog($"[CONSUME_GRANT SUCCESS] request_id={requestId}");
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_consumed", grant.ExpiresAt);
         }
     }
 
@@ -220,9 +273,10 @@ public sealed class UnlockWorker : BackgroundService
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                    RecordGrant(requestId, onlineResp.ExpiresAt ?? (DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30));
-                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS");
-                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Online service", onlineResp.ExpiresAt);
+                    // Enforce local 30-second TTL
+                    var localGrantExp = RecordGrant(requestId);
+                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Online service", localGrantExp);
                 }
                 else if (onlineResp.Status is LocalAuthStatus.Rejected or LocalAuthStatus.Timeout)
                 {
@@ -248,9 +302,10 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
-                    RecordGrant(requestId, bleResp.ExpiresAt ?? (DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30));
-                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS");
-                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Bluetooth LE", bleResp.ExpiresAt);
+                    // Enforce local 30-second TTL
+                    var localGrantExp = RecordGrant(requestId);
+                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "Face ID approved via Bluetooth LE", localGrantExp);
                 }
                 else
                 {
@@ -366,16 +421,27 @@ public sealed class UnlockWorker : BackgroundService
         return (LocalAuthStatus.Rejected, result.error ?? "BLE approval rejected", null);
     }
 
-    private void RecordGrant(string requestId, long expiresAt)
+    private long RecordGrant(string requestId)
     {
         lock (_activeGrants)
         {
+            var now = DateTimeOffset.UtcNow;
+            var nowSec = now.ToUnixTimeSeconds();
+            var expiresAt = nowSec + 30; // Strictly 30 seconds local TTL
+
             // Prune expired grants
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < now).Select(kvp => kvp.Key).ToList();
+            var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < nowSec).Select(kvp => kvp.Key).ToList();
             foreach (var k in expiredKeys) _activeGrants.Remove(k);
 
-            _activeGrants[requestId] = (DateTimeOffset.UtcNow, expiresAt);
+            _activeGrants[requestId] = new AuthGrant
+            {
+                RequestId = requestId,
+                ApprovedAt = now,
+                ExpiresAt = expiresAt,
+                Consumed = false
+            };
+
+            return expiresAt;
         }
     }
 }

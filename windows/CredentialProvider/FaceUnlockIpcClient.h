@@ -17,4 +17,9 @@ public:
         const std::wstring& username,
         DWORD timeoutMs = 90000
     );
+
+    static FaceUnlockIpcResult ConsumeGrant(
+        const std::wstring& requestId,
+        DWORD timeoutMs = 5000
+    );
 };

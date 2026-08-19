@@ -16,7 +16,7 @@ public sealed record LocalAuthRequest(
     int version,
     string command,
     string request_id,
-    string usage,
+    string? usage = null,
     string? username = null,
     int? session_id = null
 );
@@ -39,6 +39,8 @@ public static class LocalAuthStatus
     public const string Cancelled = "cancelled";
     public const string NotPaired = "not_paired";
     public const string Busy = "busy";
+    public const string Expired = "expired";
+    public const string NotFound = "not_found";
 }
 
 public sealed class LocalConfig {

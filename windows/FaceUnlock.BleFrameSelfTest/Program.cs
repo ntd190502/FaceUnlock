@@ -105,9 +105,19 @@ var reqJson = JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerial
 var reqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(reqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(reqParsed != null && reqParsed.command == "request_unlock" && reqParsed.request_id == "req-12345-abc", "LocalAuthRequest JSON serialization failure.");
 
+var consumeReq = new LocalAuthRequest(1, "consume_grant", "req-12345-abc");
+var consumeReqJson = JsonSerializer.Serialize(consumeReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var consumeReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(consumeReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(consumeReqParsed != null && consumeReqParsed.command == "consume_grant" && consumeReqParsed.request_id == "req-12345-abc", "consume_grant request serialization failure.");
+
 var resp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "Face ID approved", 1771234567);
 var respJson = JsonSerializer.Serialize(resp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 var respParsed = JsonSerializer.Deserialize<LocalAuthResponse>(respJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(respParsed != null && respParsed.status == LocalAuthStatus.Approved && respParsed.expires_at == 1771234567, "LocalAuthResponse JSON serialization failure.");
+
+var consumeResp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "grant_consumed", 1771234567);
+var consumeRespJson = JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var consumeRespParsed = JsonSerializer.Deserialize<LocalAuthResponse>(consumeRespJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(consumeRespParsed != null && consumeRespParsed.status == LocalAuthStatus.Approved && consumeRespParsed.message == "grant_consumed", "consume_grant response serialization failure.");
 
 Console.WriteLine("LocalAuth IPC Model self-test PASS.");
