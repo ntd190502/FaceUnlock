@@ -41,6 +41,18 @@ jobs:
       - name: Run BLE framing self-test
         run: dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore
 
+      - name: Build FaceUnlock Credential Provider (Release)
+        run: |
+          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -A x64
+          cmake --build windows/CredentialProvider/build --config Release
+
+      - name: Verify FaceUnlockCredentialProvider.dll
+        shell: pwsh
+        run: |
+          $dll = "windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll"
+          if (-not (Test-Path $dll)) { throw "Missing FaceUnlockCredentialProvider.dll at $dll" }
+          Write-Host "Found DLL: $dll"
+
       - name: Verify BLE framing source is compiled
         shell: pwsh
         run: |
