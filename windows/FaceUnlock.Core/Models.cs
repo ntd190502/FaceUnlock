@@ -29,7 +29,8 @@ public sealed record LocalAuthResponse(
     string status,
     string? message = null,
     long? expires_at = null,
-    string? service_version = null
+    string? service_version = null,
+    string? ticket = null
 );
 
 public static class LocalAuthStatus

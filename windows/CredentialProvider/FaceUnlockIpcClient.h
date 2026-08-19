@@ -8,6 +8,7 @@ struct FaceUnlockIpcResult {
     std::wstring status;
     std::wstring message;
     long long expires_at;
+    std::string ticket;
 };
 
 class FaceUnlockIpcClient {
@@ -28,6 +29,13 @@ public:
     static FaceUnlockIpcResult GrantStatus(
         const std::wstring& requestId,
         DWORD timeoutMs = 3000
+    );
+
+    static FaceUnlockIpcResult IssueLsaTicket(
+        const std::wstring& requestId,
+        const std::wstring& userSid,
+        const std::wstring& qualifiedUsername,
+        DWORD timeoutMs = 5000
     );
 
     static FaceUnlockIpcResult ReserveGrant(

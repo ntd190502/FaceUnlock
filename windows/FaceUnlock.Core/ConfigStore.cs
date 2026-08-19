@@ -6,12 +6,17 @@ namespace FaceUnlock.Core;
 public sealed class ConfigStore {
     public string PathName { get; }
     private readonly string _tokenPath;
+    private readonly string _lsaSecretPath;
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("FaceUnlock-PC-Token-v1");
+    private static readonly byte[] LsaEntropy = Encoding.UTF8.GetBytes("FaceUnlock-LSA-Secret-v1");
+
     public ConfigStore(string? path=null) {
         PathName=path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"FaceUnlock","config.json");
         var dir=Path.GetDirectoryName(PathName)!; Directory.CreateDirectory(dir);
         _tokenPath=Path.Combine(dir,"pctoken.dpapi");
+        _lsaSecretPath=Path.Combine(dir,"lsa_secret.dpapi");
     }
+
     public LocalConfig Load() {
         LocalConfig cfg=new();
         if(File.Exists(PathName)) try { cfg=JsonSerializer.Deserialize<LocalConfig>(File.ReadAllText(PathName)) ?? new(); } catch {}
@@ -20,18 +25,21 @@ public sealed class ConfigStore {
         } else cfg.PcToken=LoadToken();
         return cfg;
     }
+
     public void Save(LocalConfig c) {
         if(!string.IsNullOrWhiteSpace(c.PcToken)) SaveToken(c.PcToken);
         var clone=new LocalConfig { ServerUrl=c.ServerUrl,PcId=c.PcId,PcName=c.PcName,PcToken=null,PairId=c.PairId,
             DeviceId=c.DeviceId,DevicePublicKeyPem=c.DevicePublicKeyPem,Devices=c.Devices };
         File.WriteAllText(PathName,JsonSerializer.Serialize(clone,new JsonSerializerOptions{WriteIndented=true}));
     }
+
     private void SaveToken(string token) {
         var raw=Encoding.UTF8.GetBytes(token);
         try { File.WriteAllBytes(_tokenPath,ProtectedData.Protect(raw,Entropy,DataProtectionScope.LocalMachine)); }
         catch { File.WriteAllBytes(_tokenPath,ProtectedData.Protect(raw,Entropy,DataProtectionScope.CurrentUser)); }
         finally { CryptographicOperations.ZeroMemory(raw); }
     }
+
     private string? LoadToken() {
         if(!File.Exists(_tokenPath)) return null;
         try {
@@ -40,5 +48,37 @@ public sealed class ConfigStore {
             catch { raw=ProtectedData.Unprotect(enc,Entropy,DataProtectionScope.CurrentUser); }
             var token=Encoding.UTF8.GetString(raw); CryptographicOperations.ZeroMemory(raw); return token;
         } catch { return null; }
+    }
+
+    public byte[] GetOrCreateLsaMachineSecret() {
+        if (File.Exists(_lsaSecretPath)) {
+            try {
+                var enc = File.ReadAllBytes(_lsaSecretPath);
+                return ProtectedData.Unprotect(enc, LsaEntropy, DataProtectionScope.LocalMachine);
+            } catch {
+                // If corrupted or unreadable, regenerate
+            }
+        }
+        var newSecret = new byte[32];
+        RandomNumberGenerator.Fill(newSecret);
+        try {
+            var enc = ProtectedData.Protect(newSecret, LsaEntropy, DataProtectionScope.LocalMachine);
+            File.WriteAllBytes(_lsaSecretPath, enc);
+            // Secure ACL to SYSTEM + Admins only
+            try {
+                var fileInfo = new FileInfo(_lsaSecretPath);
+                var fileSec = fileInfo.GetAccessControl();
+                fileSec.SetAccessRuleProtection(true, false);
+                var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                var adminSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                fileSec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(systemSid, System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
+                fileSec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(adminSid, System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
+                fileInfo.SetAccessControl(fileSec);
+            } catch {
+                // Ignore ACL errors if not running with privilege
+            }
+        } catch {
+        }
+        return newSecret;
     }
 }

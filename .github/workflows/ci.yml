@@ -70,6 +70,31 @@ jobs:
             throw "Safety Harness FAILED with exit code $LASTEXITCODE"
           }
 
+      - name: Build FaceUnlock Authentication Package (Release)
+        shell: pwsh
+        run: |
+          cmake -B windows/FaceUnlock.AuthPackage/build -S windows/FaceUnlock.AuthPackage -A x64
+          cmake --build windows/FaceUnlock.AuthPackage/build --config Release
+
+      - name: Verify FaceUnlockAuthPackage.dll
+        shell: pwsh
+        run: |
+          $dll = "windows/FaceUnlock.AuthPackage/build/Release/FaceUnlockAuthPackage.dll"
+          if (-not (Test-Path $dll)) { throw "Missing FaceUnlockAuthPackage.dll at $dll" }
+          Write-Host "Found DLL: $dll"
+
+      - name: Build & Run AuthPackage Safety & Fuzz Harness
+        shell: pwsh
+        run: |
+          cmake -B windows/FaceUnlock.AuthPackageHarness/build -S windows/FaceUnlock.AuthPackageHarness -A x64
+          cmake --build windows/FaceUnlock.AuthPackageHarness/build --config Release
+          $harness = "windows/FaceUnlock.AuthPackageHarness/build/Release/FaceUnlockAuthPackageHarness.exe"
+          Write-Host "Running AuthPackage harness and 10,000 fuzz tests: $harness"
+          & $harness
+          if ($LASTEXITCODE -ne 0) {
+            throw "AuthPackage Safety Harness FAILED with exit code $LASTEXITCODE"
+          }
+
       - name: Verify BLE framing source is compiled
         shell: pwsh
         run: |

@@ -5,6 +5,7 @@
 
 #include "FaceUnlockCredentialProvider.h"
 #include "FaceUnlockIpcClient.h"
+#include "../FaceUnlock.AuthPackage/FaceUnlockAuthCommon.h"
 #include <new>
 #include <vector>
 #include <string>
@@ -618,7 +619,7 @@ public:
                                 this->approvedRequestId_   = reqId;
                                 StringCchCopyW(this->statusMessage_,
                                     ARRAYSIZE(this->statusMessage_),
-                                    L"Face ID approved. Enter Windows password.");
+                                    L"Face ID approved. Unlocking...");
                                 success = true;
                             } else {
                                 this->authFailed_ = true; // Stop auto-retrying on subsequent GetSerialization calls
@@ -677,12 +678,89 @@ public:
             return S_OK;
         }
 
-        // --- Face ID approved. Check password ---
+        // --- TRUE PASSWORDLESS LOGON: Try FaceUnlock Authentication Package First ---
+        DWORD faceUnlockPkgId = 0;
+        {
+            HANDLE hLsa = nullptr;
+            NTSTATUS lsaStatus = LsaConnectUntrusted(&hLsa);
+            if (lsaStatus == 0 && hLsa != nullptr) {
+                LSA_STRING pkgName;
+                pkgName.Buffer        = const_cast<PCHAR>(FACEUNLOCK_AUTHPACKAGE_NAME_A);
+                pkgName.Length        = static_cast<USHORT>(strlen(FACEUNLOCK_AUTHPACKAGE_NAME_A));
+                pkgName.MaximumLength = pkgName.Length + 1;
+                LsaLookupAuthenticationPackage(hLsa, &pkgName, &faceUnlockPkgId);
+                LsaDeregisterLogonProcess(hLsa);
+            }
+        }
+
+        if (faceUnlockPkgId != 0) {
+            AppendCpLog("FaceUnlockAuthPackage detected in LSA. Requesting LSA ticket...");
+            // Request signed FACEUNLOCK_LOGON_V1 ticket from FaceUnlock.Service
+            FaceUnlockIpcResult ticketResult = FaceUnlockIpcClient::IssueLsaTicket(
+                approvedReq, userSidCopy, userQualCopy, 5000);
+
+            if (ticketResult.ok && !ticketResult.ticket.empty()) {
+                // Decode base64 ticket into binary buffer
+                DWORD cbBinary = 0;
+                if (CryptStringToBinaryA(
+                    ticketResult.ticket.c_str(),
+                    static_cast<DWORD>(ticketResult.ticket.length()),
+                    CRYPT_STRING_BASE64,
+                    nullptr,
+                    &cbBinary,
+                    nullptr,
+                    nullptr) && cbBinary == sizeof(FACEUNLOCK_LOGON_V1))
+                {
+                    auto rgb = static_cast<PBYTE>(CoTaskMemAlloc(cbBinary));
+                    if (rgb) {
+                        if (CryptStringToBinaryA(
+                            ticketResult.ticket.c_str(),
+                            static_cast<DWORD>(ticketResult.ticket.length()),
+                            CRYPT_STRING_BASE64,
+                            rgb,
+                            &cbBinary,
+                            nullptr,
+                            nullptr))
+                        {
+                            pcpcs->clsidCredentialProvider = CLSID_FaceUnlockProvider;
+                            pcpcs->ulAuthenticationPackage = faceUnlockPkgId;
+                            pcpcs->cbSerialization         = cbBinary;
+                            pcpcs->rgbSerialization        = rgb;
+                            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+
+                            {
+                                std::lock_guard<std::mutex> lock(stateMutex_);
+                                StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Unlocking Windows...");
+                            }
+
+                            ICredentialProviderCredentialEvents* evtSnap = nullptr;
+                            {
+                                std::lock_guard<std::mutex> lock(stateMutex_);
+                                evtSnap = events_;
+                                if (evtSnap) evtSnap->AddRef();
+                            }
+                            if (evtSnap) {
+                                evtSnap->SetFieldString(this, FID_STATUS_TEXT, statusMessage_);
+                                evtSnap->Release();
+                            }
+
+                            AppendCpLog("Passwordless FACEUNLOCK_LOGON_V1 serialization successful");
+                            return S_OK;
+                        }
+                        CoTaskMemFree(rgb);
+                    }
+                }
+            }
+
+            AppendCpLog("Failed to obtain valid LSA ticket from Service");
+        }
+
+        // --- Fallback: Password-based Negotiate serialization (if AuthPackage not installed) ---
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
             if (password_[0] == L'\0') {
                 *pcpsiOptionalStatusIcon = CPSI_WARNING;
-                DuplicateString(L"Please enter your Windows password.", ppszOptionalStatusText);
+                DuplicateString(L"Face ID approved. Please enter your Windows password.", ppszOptionalStatusText);
                 return S_OK;
             }
         }
@@ -716,7 +794,7 @@ public:
             return S_OK;
         }
 
-        // --- Serialize Windows credential ---
+        // --- Serialize Negotiate Windows credential ---
         DWORD authPackage = 0;
         {
             HANDLE hLsa = nullptr;

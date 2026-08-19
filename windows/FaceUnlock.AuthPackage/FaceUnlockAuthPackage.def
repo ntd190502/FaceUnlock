@@ -1,0 +1,4 @@
+LIBRARY FaceUnlockAuthPackage
+EXPORTS
+    SpLsaModeInitialize
+    SpUserModeInitialize

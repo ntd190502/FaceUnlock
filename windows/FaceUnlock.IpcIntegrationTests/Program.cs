@@ -130,6 +130,12 @@ public class Program
                     : null;
                 Check(malformedResp != null && malformedResp.status == LocalAuthStatus.Error, "TEST G: malformed JSON returns Error response cleanly without service crash");
             }
+
+            // TEST H: issue_lsa_ticket on invalid/non-existent grant rejects cleanly
+            Console.WriteLine("\n[Test H] issue_lsa_ticket on non-existent grant");
+            var reqIdH = Guid.NewGuid().ToString("N");
+            var ticketResp = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdH, null, null, "S-1-5-21-0000", "TEST\\User"));
+            Check(ticketResp != null && ticketResp.status == LocalAuthStatus.NotFound, "TEST H: issue_lsa_ticket on non-existent grant returns NotFound");
         }
         finally
         {

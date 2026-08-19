@@ -140,4 +140,14 @@ var consumeRespJson = JsonSerializer.Serialize(consumeResp, new JsonSerializerOp
 var consumeRespParsed = JsonSerializer.Deserialize<LocalAuthResponse>(consumeRespJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 Require(consumeRespParsed != null && consumeRespParsed.status == LocalAuthStatus.Consumed && consumeRespParsed.message == "grant_consumed", "consume_grant response serialization failure.");
 
+var issueReq = new LocalAuthRequest(1, "issue_lsa_ticket", "req-12345-abc", null, "testuser", "S-1-5-21-0000", "TEST\\testuser");
+var issueReqJson = JsonSerializer.Serialize(issueReq, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var issueReqParsed = JsonSerializer.Deserialize<LocalAuthRequest>(issueReqJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(issueReqParsed != null && issueReqParsed.command == "issue_lsa_ticket" && issueReqParsed.user_sid == "S-1-5-21-0000", "issue_lsa_ticket serialization failure.");
+
+var issueResp = new LocalAuthResponse(1, "req-12345-abc", LocalAuthStatus.Approved, "lsa_ticket_issued", 1771234567, "1.1.0", "dGVzdC10aWNrZXQtYmFzZTY0");
+var issueRespJson = JsonSerializer.Serialize(issueResp, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+var issueRespParsed = JsonSerializer.Deserialize<LocalAuthResponse>(issueRespJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+Require(issueRespParsed != null && issueRespParsed.status == LocalAuthStatus.Approved && issueRespParsed.ticket == "dGVzdC10aWNrZXQtYmFzZTY0", "issue_lsa_ticket response serialization failure.");
+
 Console.WriteLine("LocalAuth IPC Model self-test PASS.");

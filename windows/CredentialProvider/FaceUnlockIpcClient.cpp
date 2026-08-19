@@ -167,11 +167,13 @@ static FaceUnlockIpcResult ExecuteSingleCommand(
 
                     std::string status = ExtractJsonField(line, "status");
                     std::string msg = ExtractJsonField(line, "message");
+                    std::string ticket = ExtractJsonField(line, "ticket");
                     long long exp = ExtractJsonLong(line, "expires_at");
 
                     result.status = Utf8ToUtf16(status);
                     result.message = Utf8ToUtf16(msg);
                     result.expires_at = exp;
+                    result.ticket = ticket;
                     result.ok = (status == successStatus);
 
                     CloseHandle(hPipe);
@@ -327,4 +329,25 @@ FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
             AppendCpLog(logBuf);
         }
     }
+}
+
+FaceUnlockIpcResult FaceUnlockIpcClient::IssueLsaTicket(
+    const std::wstring& requestId,
+    const std::wstring& userSid,
+    const std::wstring& qualifiedUsername,
+    DWORD timeoutMs
+) {
+    std::string reqIdUtf8 = Utf16ToUtf8(requestId);
+    std::string sidUtf8   = Utf16ToUtf8(userSid);
+    std::string userUtf8  = Utf16ToUtf8(qualifiedUsername);
+
+    std::string json = "{\"version\":1,\"command\":\"issue_lsa_ticket\",\"request_id\":\"" +
+                       EscapeJson(reqIdUtf8) +
+                       "\",\"user_sid\":\"" +
+                       EscapeJson(sidUtf8) +
+                       "\",\"qualified_username\":\"" +
+                       EscapeJson(userUtf8) +
+                       "\"}\n";
+
+    return ExecuteSingleCommand(json, "approved", timeoutMs);
 }

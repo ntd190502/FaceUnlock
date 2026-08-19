@@ -50,6 +50,9 @@ public sealed class UnlockWorker : BackgroundService
         public required long ExpiresAt { get; init; }
         public GrantState State { get; set; } = GrantState.Approved;
         public string? LastMessage { get; set; }
+        public string? UserSid { get; set; }
+        public string? QualifiedUsername { get; set; }
+        public string? DeviceId { get; set; }
     }
 
     // In-memory grant cache: requestId -> AuthGrant
@@ -277,6 +280,15 @@ public sealed class UnlockWorker : BackgroundService
                     opName = "WRITE_CONSUME";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     AppendServiceLog($"[ACK WRITTEN] consume_grant request_id={request.request_id}");
+                    return;
+                }
+
+                if (request.command == "issue_lsa_ticket")
+                {
+                    var ticketResp = IssueLsaTicket(request);
+                    opName = "WRITE_ISSUE_LSA_TICKET";
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(ticketResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    AppendServiceLog($"[ACK WRITTEN] issue_lsa_ticket request_id={request.request_id} status={ticketResp.status}");
                     return;
                 }
 
@@ -586,7 +598,7 @@ public sealed class UnlockWorker : BackgroundService
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                    var localGrantExp = RecordGrant(requestId);
+                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
                     return;
                 }
@@ -621,7 +633,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
-                    var localGrantExp = RecordGrant(requestId);
+                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId);
                     AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
                     return;
                 }
@@ -783,7 +795,124 @@ public sealed class UnlockWorker : BackgroundService
         return (LocalAuthStatus.Rejected, result.error ?? "BLE approval rejected", null);
     }
 
-    private long RecordGrant(string requestId)
+    private LocalAuthResponse IssueLsaTicket(LocalAuthRequest req)
+    {
+        var requestId = req.request_id;
+        lock (_activeGrants)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var nowSec = now.ToUnixTimeSeconds();
+            PruneExpiredGrants(nowSec);
+
+            if (!_activeGrants.TryGetValue(requestId, out var grant))
+            {
+                AppendServiceLog($"[ISSUE_LSA_TICKET NOT_FOUND] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotFound, "Grant not found or expired");
+            }
+
+            if (grant.State != GrantState.Approved && grant.State != GrantState.Reserved)
+            {
+                AppendServiceLog($"[ISSUE_LSA_TICKET INVALID_STATE] request_id={requestId} state={grant.State}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, $"Grant in state {grant.State}");
+            }
+
+            if (grant.ExpiresAt < nowSec)
+            {
+                _activeGrants.Remove(requestId);
+                AppendServiceLog($"[ISSUE_LSA_TICKET EXPIRED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired");
+            }
+
+            // Verify UserSid binding if provided
+            if (!string.IsNullOrWhiteSpace(req.user_sid) && !string.IsNullOrWhiteSpace(grant.UserSid))
+            {
+                if (!string.Equals(req.user_sid, grant.UserSid, StringComparison.OrdinalIgnoreCase))
+                {
+                    AppendServiceLog($"[ISSUE_LSA_TICKET SID_MISMATCH] request_id={requestId} req_sid={req.user_sid} grant_sid={grant.UserSid}");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "User SID mismatch");
+                }
+            }
+
+            // Create FACEUNLOCK_LOGON_V1 binary structure
+            var cfg = _configStore.Load();
+            var machineSecret = _configStore.GetOrCreateLsaMachineSecret();
+
+            var userSid = req.user_sid ?? grant.UserSid ?? string.Empty;
+            var qualifiedUser = req.qualified_username ?? grant.QualifiedUsername ?? req.username ?? string.Empty;
+            // Extract local username part if domain\user or machine\user
+            var accountName = qualifiedUser.Contains('\\') ? qualifiedUser.Split('\\')[1] : qualifiedUser;
+            var machineName = Environment.MachineName;
+            var deviceId = grant.DeviceId ?? cfg.DeviceId ?? string.Empty;
+            var issuedAt = nowSec;
+            var expiresAt = grant.ExpiresAt;
+
+            var nonce = new byte[16];
+            RandomNumberGenerator.Fill(nonce);
+
+            // Serialize header + fields for HMAC
+            // Struct size:
+            // dwMagic(4) + dwVersion(4) + cbTotalSize(4) + szRequestId(64) + wszUserSid(256) + wszAccountName(512) + wszMachineName(512) + szDeviceId(64) + nIssuedAt(8) + nExpiresAt(8) + bNonce(16) + bHmacSignature(32)
+            // Total size = 4+4+4+64+256+512+512+64+8+8+16+32 = 1480 bytes
+            const int totalSize = 1480;
+            var buffer = new byte[totalSize];
+            using var ms = new MemoryStream(buffer);
+            using var bw = new BinaryWriter(ms);
+
+            bw.Write((uint)0x46554C4B); // 'FULK'
+            bw.Write((uint)1);          // version 1
+            bw.Write((uint)totalSize);  // total size
+
+            // szRequestId (64 bytes ASCII)
+            var reqIdBytes = new byte[64];
+            Encoding.ASCII.GetBytes(requestId, 0, Math.Min(requestId.Length, 63), reqIdBytes, 0);
+            bw.Write(reqIdBytes);
+
+            // wszUserSid (128 WCHARs = 256 bytes)
+            var sidBytes = new byte[256];
+            Encoding.Unicode.GetBytes(userSid, 0, Math.Min(userSid.Length, 127), sidBytes, 0);
+            bw.Write(sidBytes);
+
+            // wszAccountName (256 WCHARs = 512 bytes)
+            var accBytes = new byte[512];
+            Encoding.Unicode.GetBytes(accountName, 0, Math.Min(accountName.Length, 255), accBytes, 0);
+            bw.Write(accBytes);
+
+            // wszMachineName (256 WCHARs = 512 bytes)
+            var machBytes = new byte[512];
+            Encoding.Unicode.GetBytes(machineName, 0, Math.Min(machineName.Length, 255), machBytes, 0);
+            bw.Write(machBytes);
+
+            // szDeviceId (64 bytes ASCII)
+            var devBytes = new byte[64];
+            Encoding.ASCII.GetBytes(deviceId, 0, Math.Min(deviceId.Length, 63), devBytes, 0);
+            bw.Write(devBytes);
+
+            // nIssuedAt (8 bytes)
+            bw.Write(issuedAt);
+
+            // nExpiresAt (8 bytes)
+            bw.Write(expiresAt);
+
+            // bNonce (16 bytes)
+            bw.Write(nonce);
+
+            // Compute HMAC-SHA256 over everything written so far (1480 - 32 = 1448 bytes)
+            var payloadToSign = buffer.AsSpan(0, totalSize - 32).ToArray();
+            using var hmac = new HMACSHA256(machineSecret);
+            var signature = hmac.ComputeHash(payloadToSign);
+            bw.Write(signature);
+
+            // Mark grant consumed
+            grant.State = GrantState.Consumed;
+
+            var ticketBase64 = Convert.ToBase64String(buffer);
+            AppendServiceLog($"[ISSUE_LSA_TICKET SUCCESS] request_id={requestId} user_sid={userSid} account={accountName} issued_at={issuedAt} expires_at={expiresAt}");
+
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "lsa_ticket_issued", expiresAt, ServiceVersion, ticketBase64);
+        }
+    }
+
+    private long RecordGrant(string requestId, string? userSid = null, string? qualifiedUser = null, string? deviceId = null)
     {
         lock (_activeGrants)
         {
@@ -798,7 +927,10 @@ public sealed class UnlockWorker : BackgroundService
                 RequestId = requestId,
                 ApprovedAt = now,
                 ExpiresAt = expiresAt,
-                State = GrantState.Approved
+                State = GrantState.Approved,
+                UserSid = userSid,
+                QualifiedUsername = qualifiedUser,
+                DeviceId = deviceId
             };
 
             return expiresAt;

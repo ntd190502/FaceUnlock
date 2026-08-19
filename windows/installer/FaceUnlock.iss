@@ -33,14 +33,19 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "bin\FaceUnlock.Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock.Service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockCredentialProvider.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\FaceUnlockAuthPackage.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Enable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Disable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Enable-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Disable-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Check-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName} Agent"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\FaceUnlock Emergency Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Recovery.ps1"""
 Name: "{group}\FaceUnlock - Enable Credential Provider (Advanced)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-CredentialProvider.ps1"""
+Name: "{group}\FaceUnlock - Enable Auth Package (Passwordless)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-AuthPackage.ps1"""
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 ; ============================================================
