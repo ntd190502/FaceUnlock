@@ -9,6 +9,11 @@ namespace FaceUnlock.Core;
 
 public sealed class BleScanner
 {
+    private readonly IBluetoothRadioManager _radioManager;
+
+    public BleScanner(IBluetoothRadioManager? radioManager = null) =>
+        _radioManager = radioManager ?? new WindowsBluetoothRadioManager();
+
     public static readonly Guid ServiceUuid = Guid.Parse("7A6AF110-8D20-4C5F-BB31-6CECF28F0110");
     public static readonly Guid RequestUuid = Guid.Parse("7A6AF111-8D20-4C5F-BB31-6CECF28F0110");
     public static readonly Guid ResponseUuid = Guid.Parse("7A6AF112-8D20-4C5F-BB31-6CECF28F0110");
@@ -27,6 +32,10 @@ public sealed class BleScanner
         CancellationToken ct = default)
     {
         if (timeout == default) timeout = TimeSpan.FromSeconds(8);
+        var radio = await _radioManager.EnsureEnabledAsync(ct);
+        if (radio.State != BluetoothState.Enabled)
+            throw new InvalidOperationException(radio.Message ?? $"Bluetooth is {radio.State}");
+
         var deadline = DateTime.UtcNow + timeout;
         var addressQueue = new System.Collections.Concurrent.ConcurrentQueue<ulong>();
         var seenAddresses = new HashSet<ulong>();

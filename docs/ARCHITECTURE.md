@@ -45,6 +45,14 @@ The Face ID approval task is kept separate from the polling task so the temporar
 
 ## Offline BLE path
 
+Phase F.1 makes transport selection connectivity-aware. The Windows service monitors
+the current Internet profile, starts directly with BLE while offline, and switches
+from Online to BLE if connectivity is lost, the online request fails, or it expires.
+Before BLE discovery it detects the Windows Bluetooth radio and requests that Windows
+turn it on when access is allowed. Discovery is retried three times with bounded
+backoff. Windows may deny radio control to a service; that result is surfaced and the
+flow fails closed rather than pretending Bluetooth is available.
+
 ```text
 Windows scans for FaceUnlock BLE service
     -> connects to a candidate

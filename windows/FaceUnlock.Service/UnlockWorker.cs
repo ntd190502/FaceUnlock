@@ -13,7 +13,7 @@ namespace FaceUnlock.Service;
 public sealed class UnlockWorker : BackgroundService
 {
     private readonly string _pipeName;
-    private const string ServiceVersion = "1.2.0";
+    private const string ServiceVersion = "1.3.0";
     private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
 
     private readonly ILogger<UnlockWorker> _log;
@@ -21,6 +21,7 @@ public sealed class UnlockWorker : BackgroundService
     private readonly LsaMachineSecretStore _lsaSecretStore;
     private readonly KeyStore _keyStore;
     private readonly BleScanner _bleScanner;
+    private readonly WindowsInternetMonitor _internetMonitor;
     private readonly SemaphoreSlim _authLock = new(1, 1);
     private readonly string _logDir;
     private readonly string _serviceLogFile;
@@ -29,6 +30,7 @@ public sealed class UnlockWorker : BackgroundService
     // Active auth session tracking for cancel_request
     private readonly object _sessionSync = new();
     private string? _currentActiveRequestId;
+    private string? _currentActiveIdentity;
     private CancellationTokenSource? _currentActiveCts;
 
     private enum GrantState
@@ -70,6 +72,8 @@ public sealed class UnlockWorker : BackgroundService
         _lsaSecretStore = new LsaMachineSecretStore();
         _keyStore = new KeyStore();
         _bleScanner = new BleScanner();
+        _internetMonitor = new WindowsInternetMonitor();
+        _internetMonitor.StateChanged += (_, state) => AppendServiceLog($"[INTERNET STATE] {state}");
 
         _logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "logs");
         _serviceLogFile = Path.Combine(_logDir, "service.log");
@@ -646,11 +650,44 @@ public sealed class UnlockWorker : BackgroundService
 
         lock (_sessionSync)
         {
+            var identity = RequestIdentity.From(req);
             // If the same request is already in progress, return Pending ACK
-            if (_currentActiveRequestId == requestId && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
+            if (_currentActiveRequestId == requestId && _currentActiveIdentity == identity && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
             {
                 AppendServiceLog($"[REQUEST RE-ENTER] request_id={requestId} already active");
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Authentication in progress");
+            }
+
+            lock (_activeGrants)
+            {
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                PruneExpiredGrants(now);
+                if (_activeGrants.TryGetValue(requestId, out var existing))
+                {
+                    var sameBinding = string.Equals(existing.UserSid, req.user_sid, StringComparison.OrdinalIgnoreCase)
+                        && existing.SessionId == req.session_id
+                        && string.Equals(existing.ClientType, req.client_type, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(existing.PcId, req.pc_id, StringComparison.Ordinal);
+                    if (!sameBinding)
+                    {
+                        AppendServiceLog($"[REQUEST DEDUP REJECTED] request_id={requestId} binding mismatch");
+                        return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Duplicate request_id has different security bindings");
+                    }
+
+                    var status = existing.State switch
+                    {
+                        GrantState.Pending => LocalAuthStatus.Pending,
+                        GrantState.Approved => LocalAuthStatus.Approved,
+                        GrantState.Reserved => LocalAuthStatus.Reserved,
+                        GrantState.Rejected => LocalAuthStatus.Rejected,
+                        GrantState.Timeout => LocalAuthStatus.Timeout,
+                        GrantState.Cancelled => LocalAuthStatus.Cancelled,
+                        GrantState.NotPaired => LocalAuthStatus.NotPaired,
+                        _ => LocalAuthStatus.Error
+                    };
+                    AppendServiceLog($"[REQUEST DEDUP HIT] request_id={requestId} state={existing.State}");
+                    return new LocalAuthResponse(1, requestId, status, existing.LastMessage, existing.ExpiresAt);
+                }
             }
 
             // If another request is active, cancel it or return busy
@@ -662,6 +699,7 @@ public sealed class UnlockWorker : BackgroundService
 
             var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             _currentActiveRequestId = requestId;
+            _currentActiveIdentity = identity;
             _currentActiveCts = cts;
 
             lock (_activeGrants)
@@ -695,14 +733,19 @@ public sealed class UnlockWorker : BackgroundService
         var deviceId = cfg.DeviceId!;
         var devicePubKey = cfg.DevicePublicKeyPem!;
         var api = new ApiClient(cfg);
+        var onlineAttempted = false;
 
         try
         {
             // 1. Try Online Unlock Flow first
-            try
+            if (_internetMonitor.Current != InternetState.Offline)
             {
-                _log.LogInformation("Attempting online unlock for request {RequestId}...", requestId);
-                var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
+                try
+                {
+                    onlineAttempted = true;
+                    _log.LogInformation("Attempting online unlock for request {RequestId}...", requestId);
+                    AppendServiceLog($"[TRANSPORT SELECTED] request_id={requestId} transport=Online internet={_internetMonitor.Current}");
+                    var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
 
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
@@ -718,25 +761,28 @@ public sealed class UnlockWorker : BackgroundService
                     }
                     return;
                 }
-                else if (onlineResp.Status is LocalAuthStatus.Rejected or LocalAuthStatus.Timeout)
-                {
+                    else if (onlineResp.Status == LocalAuthStatus.Rejected)
+                    {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
                     AppendServiceLog($"[{onlineResp.Status.ToUpperInvariant()}] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s");
                     SetGrantTerminalState(requestId, onlineResp.Status, onlineResp.Message);
-                    return;
+                        return;
+                    }
+                    AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} Online->BLE reason={onlineResp.Status}");
                 }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
                 AppendServiceLog($"[CANCELLED] request_id={requestId} online flow cancelled");
                 SetGrantTerminalState(requestId, LocalAuthStatus.Cancelled, "Authentication cancelled");
-                return;
-            }
-            catch (Exception ex)
-            {
+                    return;
+                }
+                catch (Exception ex)
+                {
                 _log.LogWarning(ex, "Online unlock attempt failed for request {RequestId}, falling back to BLE", requestId);
-                AppendServiceLog($"Online transport failed for request_id={requestId}: {ex.Message}. Falling back to BLE.");
+                    AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} Online->BLE reason={ex.Message}");
+                }
             }
+            else AppendServiceLog($"[TRANSPORT SELECTED] request_id={requestId} transport=BLE internet=Offline");
 
             // 2. Fallback to BLE Offline Flow
             try
@@ -746,6 +792,32 @@ public sealed class UnlockWorker : BackgroundService
 
                 var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, cancellationToken);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
+
+                // If the request began offline and connectivity returned during the
+                // bounded BLE attempts, make one online attempt. Never bounce back
+                // to a transport that has already been attempted for this request.
+                if (bleResp.Status == LocalAuthStatus.Timeout && !onlineAttempted && _internetMonitor.Current == InternetState.Online)
+                {
+                    AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} BLE->Online reason=InternetRestored");
+                    SetGrantMessage(requestId, "Internet restored; contacting iPhone online...");
+                    try
+                    {
+                        onlineAttempted = true;
+                        var restoredOnlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
+                        if (restoredOnlineResp.Status == LocalAuthStatus.Approved)
+                        {
+                            duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
+                            RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                            AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
+                            return;
+                        }
+                        bleResp = restoredOnlineResp;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        AppendServiceLog($"[TRANSPORT ERROR] request_id={requestId} transport=Online-after-BLE reason={ex.Message}");
+                    }
+                }
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
@@ -787,6 +859,7 @@ public sealed class UnlockWorker : BackgroundService
                 if (_currentActiveRequestId == requestId)
                 {
                     _currentActiveRequestId = null;
+                    _currentActiveIdentity = null;
                     _currentActiveCts = null;
                 }
             }
@@ -835,6 +908,8 @@ public sealed class UnlockWorker : BackgroundService
 
         while (DateTimeOffset.UtcNow < deadline && !stoppingToken.IsCancellationRequested)
         {
+            if (_internetMonitor.Current == InternetState.Offline)
+                throw new HttpRequestException("Internet connection was lost");
             await Task.Delay(1000, stoppingToken);
             var s = await api.GetUnlockStatusAsync(r.session_id, stoppingToken);
 
@@ -894,10 +969,17 @@ public sealed class UnlockWorker : BackgroundService
             _keyStore.SignBase64(msg)
         );
 
-        using var bleCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        bleCts.CancelAfter(TimeSpan.FromSeconds(15));
-
-        var result = await _bleScanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(15), bleCts.Token);
+        OfflineBleResponse? result = null;
+        for (var attempt = 1; attempt <= BleRetryPolicy.DefaultAttempts && result is null; attempt++)
+        {
+            if (attempt > 1)
+            {
+                var delay = BleRetryPolicy.DelayForAttempt(attempt - 1);
+                AppendServiceLog($"[BLE RETRY] attempt={attempt}/{BleRetryPolicy.DefaultAttempts} delay_ms={delay.TotalMilliseconds:F0}");
+                await Task.Delay(delay, stoppingToken);
+            }
+            result = await _bleScanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(10), stoppingToken);
+        }
         if (result == null)
         {
             return (LocalAuthStatus.Timeout, "iPhone BLE peripheral not found or timed out", null);

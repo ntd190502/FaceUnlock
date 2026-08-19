@@ -39,6 +39,10 @@
 - Windows verifies an approved session with the public key snapshot of the device that created that session, not whichever device is selected later.
 
 ## F. Offline BLE, Device Matching & Framing
+- With Bluetooth off, verify Windows detects the disabled radio and attempts to turn it on. If Windows denies service radio access, verify the denial is logged and no hardware PASS is recorded.
+- Verify BLE discovery makes at most three attempts with bounded backoff and preserves the same signed offline session across retries.
+- Disconnect/reconnect Internet during an authentication request and verify the service logs the state transition and switches Online -> BLE without spawning a duplicate request.
+- Repeat the same `request_id` with identical security bindings and verify the existing pending/terminal result is returned. Repeat it with a changed SID/session/client/PC binding and verify it is rejected.
 - Disable Internet on PC and iPhone while keeping Bluetooth active.
 - Windows scans for FaceUnlock BLE service and verifies Device ID characteristic (`7A6AF113-8D20-4C5F-BB31-6CECF28F0110`).
 - If another non-target FaceUnlock iPhone is nearby, Windows scanner skips it and continues scanning.
