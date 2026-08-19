@@ -54,6 +54,8 @@ jobs:
           Copy-Item windows/dist/publish-agent/FaceUnlock.Core.dll windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll windows/installer/bin/
           Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/
+          Copy-Item windows/CredentialProvider/Enable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
+          Copy-Item windows/CredentialProvider/Disable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
 
           # Also prepare Portable directory
           New-Item -ItemType Directory -Path windows/dist/Portable -Force
