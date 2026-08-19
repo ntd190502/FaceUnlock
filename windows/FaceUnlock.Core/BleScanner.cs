@@ -14,12 +14,19 @@ public sealed class BleScanner
     public static readonly Guid ResponseUuid = Guid.Parse("7A6AF112-8D20-4C5F-BB31-6CECF28F0110");
     public static readonly Guid DeviceUuid = Guid.Parse("7A6AF113-8D20-4C5F-BB31-6CECF28F0110");
 
+    public Task<OfflineBleResponse?> DiscoverAndApproveAsync(
+        OfflineUnlockPayload payload,
+        TimeSpan timeout,
+        CancellationToken ct = default) =>
+        DiscoverAndApproveAsync(payload, null, timeout, ct);
+
     public async Task<OfflineBleResponse?> DiscoverAndApproveAsync(
         OfflineUnlockPayload payload,
-        string? expectedDeviceId,
-        TimeSpan timeout,
-        CancellationToken ct)
+        string? expectedDeviceId = null,
+        TimeSpan timeout = default,
+        CancellationToken ct = default)
     {
+        if (timeout == default) timeout = TimeSpan.FromSeconds(8);
         var deadline = DateTime.UtcNow + timeout;
         var addressQueue = new System.Collections.Concurrent.ConcurrentQueue<ulong>();
         var seenAddresses = new HashSet<ulong>();
@@ -164,7 +171,7 @@ public sealed class BleScanner
                     bytes,
                     BleFrameKind.Response,
                     out var complete,
-                    out _,
+                    out bool _,
                     out var error
                 );
 

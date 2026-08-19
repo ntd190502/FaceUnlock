@@ -1,6 +1,7 @@
 name: FaceUnlock
 options:
   bundleIdPrefix: io.faceunlock
+  xcodeVersion: "15.0"
 settings:
   base:
     IPHONEOS_DEPLOYMENT_TARGET: 14.0

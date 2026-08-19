@@ -1,6 +1,7 @@
 using FaceUnlock.Core;
 using QRCoder;
 using System.Text.Json;
+using System.IO;
 using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Media.Imaging;

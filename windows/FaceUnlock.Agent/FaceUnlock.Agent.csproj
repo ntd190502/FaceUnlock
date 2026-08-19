@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows10.0.19041.0</TargetFramework><UseWPF>true</UseWPF></PropertyGroup>
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows10.0.26100.0</TargetFramework><UseWPF>true</UseWPF></PropertyGroup>
   <ItemGroup><ProjectReference Include="..\FaceUnlock.Core\FaceUnlock.Core.csproj"/><PackageReference Include="QRCoder" Version="1.8.0" /></ItemGroup>
 </Project>
