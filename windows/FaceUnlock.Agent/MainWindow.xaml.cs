@@ -3,6 +3,7 @@ using QRCoder;
 using System.Text.Json;
 using System.IO;
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media.Imaging;
 
@@ -10,11 +11,18 @@ namespace FaceUnlock.Agent;
 public partial class MainWindow : Window
 {
     readonly ConfigStore store=new(); LocalConfig cfg; KeyStore keys=new(); ApiClient api; BleScanner ble=new();
-    public MainWindow(){InitializeComponent();cfg=store.Load();api=new ApiClient(cfg);Status.Text=$"PC: {cfg.PcName} | {(cfg.DeviceId is null?"Not paired":"Paired")}";}
+    public MainWindow(){InitializeComponent();cfg=store.Load();api=new ApiClient(cfg);RefreshSetupStatus();}
+    bool Paired()=>!string.IsNullOrWhiteSpace(cfg.DeviceId)&&!string.IsNullOrWhiteSpace(cfg.DevicePublicKeyPem)&&!string.IsNullOrWhiteSpace(cfg.PcToken);
+    static string InstallDir=>AppContext.BaseDirectory.TrimEnd('\\');
+    static bool ShellEnabled(){try{using var k=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Winlogon");return (k?.GetValue("Shell") as string)?.Contains("FaceUnlockShell.exe",StringComparison.OrdinalIgnoreCase)==true;}catch{return false;}}
+    static bool ServiceRunning(){try{using var p=Process.Start(new ProcessStartInfo("sc.exe","query \"FaceUnlock Service\""){RedirectStandardOutput=true,UseShellExecute=false,CreateNoWindow=true});var o=p!.StandardOutput.ReadToEnd();p.WaitForExit(1500);return o.Contains("RUNNING",StringComparison.OrdinalIgnoreCase);}catch{return false;}}
+    void RefreshSetupStatus(){var paired=Paired();var service=ServiceRunning();var shell=ShellEnabled();Status.Text=$"PAIRING: {(paired?"Paired":"Not Paired")}   SERVICE: {(service?"Running":"Error")}   SHELL GATE: {(shell?"Enabled":"Disabled")}";SetupStatus.Text=!paired?"Pair your iPhone to finish FaceUnlock setup.":shell?"FaceUnlock is ready.":"FaceUnlock is ready. Enable FaceUnlock on Windows startup?";EnableButton.Visibility=paired&&!shell?Visibility.Visible:Visibility.Collapsed;}
     void Write(string s){Log.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}\n");Log.ScrollToEnd();}
     void ShowQr(string text){using var gen=new QRCodeGenerator();using var data=gen.CreateQrCode(text,QRCodeGenerator.ECCLevel.Q);var png=new PngByteQRCode(data).GetGraphic(8);var img=new BitmapImage();using var ms=new MemoryStream(png);img.BeginInit();img.CacheOption=BitmapCacheOption.OnLoad;img.StreamSource=ms;img.EndInit();QrImage.Source=img;}
 
-    async void Pair_Click(object sender,RoutedEventArgs e){try{var pub=keys.EnsurePublicKeyPem();var r=await api.StartPairAsync(pub);cfg.PcToken=r.pc_token;cfg.PairId=r.pair_id;store.Save(cfg);api=new ApiClient(cfg);var payload=new{type="faceunlock-pair-v1",server=cfg.ServerUrl,pair_id=r.pair_id,pair_code=r.pair_code,pc_id=cfg.PcId,pc_name=cfg.PcName,pc_public_key_pem=pub};ShowQr(JsonSerializer.Serialize(payload));Write("Pair QR shown. Scan it in the iPhone app.");for(int i=0;i<60;i++){await Task.Delay(2000);var s=await api.PairStatusAsync(r.pair_id);if(s.paired&&s.device is not null){cfg.DeviceId=s.device.id;cfg.DevicePublicKeyPem=s.device.public_key_pem;store.Save(cfg);Status.Text=$"PC: {cfg.PcName} | Paired: {s.device.name}";Write("Pairing complete.");break;}}}catch(Exception ex){Write(ex.ToString());}}
+    async void Pair_Click(object sender,RoutedEventArgs e){try{var pub=keys.EnsurePublicKeyPem();var r=await api.StartPairAsync(pub);cfg.PcToken=r.pc_token;cfg.PairId=r.pair_id;store.Save(cfg);api=new ApiClient(cfg);var payload=new{type="faceunlock-pair-v1",server=cfg.ServerUrl,pair_id=r.pair_id,pair_code=r.pair_code,pc_id=cfg.PcId,pc_name=cfg.PcName,pc_public_key_pem=pub};ShowQr(JsonSerializer.Serialize(payload));Write("Pair QR shown. Scan it in the iPhone app.");for(int i=0;i<60;i++){await Task.Delay(2000);var s=await api.PairStatusAsync(r.pair_id);if(s.paired&&s.device is not null){cfg.DeviceId=s.device.id;cfg.DevicePublicKeyPem=s.device.public_key_pem;store.Save(cfg);RefreshSetupStatus();Write("Pairing complete. Enable FaceUnlock is now available.");break;}}}catch(Exception ex){Write(ex.ToString());}}
+
+    async void Enable_Click(object sender,RoutedEventArgs e){try{if(!Paired())throw new InvalidOperationException("Pair your iPhone first.");EnableButton.IsEnabled=false;var script=Path.Combine(InstallDir,"Enable-ShellGate.ps1");if(!File.Exists(script))throw new FileNotFoundException("Enable-ShellGate.ps1 is missing",script);using var p=Process.Start(new ProcessStartInfo("powershell.exe",$"-ExecutionPolicy Bypass -File \"{script}\" -Force -CustomShellPath \"{Path.Combine(InstallDir,"FaceUnlockShell.exe")}\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true});await p!.WaitForExitAsync();if(p.ExitCode!=0)throw new InvalidOperationException(await p.StandardError.ReadToEndAsync());RefreshSetupStatus();Write("FaceUnlock is ready and will be active on next sign-in/restart.");}catch(Exception ex){Write(ex.Message);RefreshSetupStatus();}finally{EnableButton.IsEnabled=true;}}
 
     async void Online_Click(object sender,RoutedEventArgs e)
     {

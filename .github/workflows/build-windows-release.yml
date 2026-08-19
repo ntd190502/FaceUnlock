@@ -77,6 +77,7 @@ jobs:
           Copy-Item windows/scripts/Disable-ShellGate.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Check-ShellGate.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Cleanup-PhaseE.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/Setup-Ready.ps1 windows/installer/bin/
           Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/Enable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/Disable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue

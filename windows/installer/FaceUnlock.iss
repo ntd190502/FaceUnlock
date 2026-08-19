@@ -1,6 +1,6 @@
 ; Script generated for Inno Setup 6
 #define MyAppName "FaceUnlock"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "FaceUnlock Team"
 #define MyAppURL "https://github.com/ntd190502/FaceUnlock"
 #define MyAppExeName "FaceUnlock.Agent.exe"
@@ -34,28 +34,20 @@ Source: "bin\FaceUnlock.Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock.Service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockShell.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockCredentialProvider.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "bin\FaceUnlockAuthPackage.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Shell-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Enable-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Disable-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Check-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Cleanup-PhaseE.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Setup-Ready.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Enable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Disable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "bin\Enable-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "bin\Disable-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "bin\Check-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName} Agent"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{#MyAppName} Shell Gate (Test Mode)"; Filename: "{app}\FaceUnlockShell.exe"; Parameters: "--test"
-Name: "{group}\FaceUnlock - Check Shell Gate"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Check-ShellGate.ps1"""
-Name: "{group}\FaceUnlock - Enable Shell Gate (Manual)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-ShellGate.ps1"""
-Name: "{group}\FaceUnlock - Disable Shell Gate"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Disable-ShellGate.ps1"""
-Name: "{group}\FaceUnlock Shell Emergency Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Shell-Recovery.ps1"""
-Name: "{group}\FaceUnlock - Cleanup Phase E AuthPackage"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Cleanup-PhaseE.ps1"""
-Name: "{group}\FaceUnlock Legacy Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Recovery.ps1"""
+Name: "{group}\FaceUnlock"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\FaceUnlock Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Shell-Recovery.ps1"""
+Name: "{group}\FaceUnlock Diagnostics"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Check-ShellGate.ps1"""
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 ; ============================================================
@@ -77,13 +69,15 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; DISABLED: regsvr32 auto-registration — see comment above
 ; Filename: "regsvr32.exe"; Parameters: "/s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
 ;
-; Create & start Windows Service using sc.exe
-Filename: "{sys}\sc.exe"; Parameters: "create ""FaceUnlock Service"" binPath= ""{app}\FaceUnlock.Service.exe"" start= auto displayName= ""FaceUnlock Service"""; Flags: runhidden
-Filename: "{sys}\sc.exe"; Parameters: "start ""FaceUnlock Service"""; Flags: runhidden
+; Idempotent service/pairing/shell policy. It logs degraded failures and restores
+; explorer.exe instead of leaving a broken Shell Gate active.
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode install -InstallDir ""{app}"""; Flags: runhidden waituntilterminated ignoreerrors
 ; Launch Agent after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; This runs first and exits nonzero if explorer restore cannot be verified.
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode uninstall -InstallDir ""{app}"""; Flags: runhidden waituntilterminated
 ; Stop and remove Windows Service
 Filename: "{sys}\sc.exe"; Parameters: "stop ""FaceUnlock Service"""; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "delete ""FaceUnlock Service"""; Flags: runhidden
