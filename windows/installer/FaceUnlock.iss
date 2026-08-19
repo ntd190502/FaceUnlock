@@ -75,4 +75,4 @@ Filename: "{sys}\sc.exe"; Parameters: "delete ""FaceUnlock Service"""; Flags: ru
 ; Unregister COM DLL (safe no-op if not registered)
 Filename: "regsvr32.exe"; Parameters: "/u /s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
 ; Also clean up any manually enabled registry keys
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'HKLM:\SOFTWARE\Classes\CLSID\{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue"""; Flags: runhidden
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'HKLM:\SOFTWARE\Classes\CLSID\{{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue"""; Flags: runhidden
