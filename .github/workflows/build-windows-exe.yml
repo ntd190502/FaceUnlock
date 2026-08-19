@@ -1,0 +1,73 @@
+name: Build FaceUnlock Windows EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-agent-exe:
+    name: Build Standalone Windows Agent EXE
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: |
+          dotnet restore windows/FaceUnlock.Core/FaceUnlock.Core.csproj
+          dotnet restore windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj
+          dotnet restore windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
+
+      - name: Run BLE framing self-test
+        run: |
+          dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore
+
+      - name: Publish standalone FaceUnlock.Agent EXE
+        run: |
+          dotnet publish windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o windows/dist/FaceUnlock-Agent
+
+      - name: Verify FaceUnlock.Agent.exe
+        shell: pwsh
+        run: |
+          $exePath = "windows/dist/FaceUnlock-Agent/FaceUnlock.Agent.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "ERROR: FaceUnlock.Agent.exe was not found at $exePath"
+          }
+          $item = Get-Item $exePath
+          Write-Host "Found EXE: $($item.FullName)"
+          Write-Host "Size: $([math]::Round($item.Length / 1MB, 2)) MB ($($item.Length) bytes)"
+
+      - name: Generate SHA256
+        shell: pwsh
+        run: |
+          Set-Location windows/dist/FaceUnlock-Agent
+          $hash = (Get-FileHash -Algorithm SHA256 "FaceUnlock.Agent.exe").Hash.ToLower()
+          "$hash  FaceUnlock.Agent.exe" | Out-File -FilePath "FaceUnlock.Agent.exe.sha256.txt" -Encoding utf8
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Windows Agent Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceUnlock-Windows-x64
+          path: |
+            windows/dist/FaceUnlock-Agent/FaceUnlock.Agent.exe
+            windows/dist/FaceUnlock-Agent/FaceUnlock.Agent.exe.sha256.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -2,6 +2,9 @@ hosting/config.php
 *.p8
 **/bin/
 **/obj/
+windows/**/bin/
+windows/**/obj/
+windows/dist/
 ios/build/
 ios/dist/
 ios/FaceUnlock.xcodeproj/
