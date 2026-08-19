@@ -28,6 +28,9 @@ test -d FaceUnlock.xcodeproj || {
 
 echo "[2/5] Build unsigned iOS app"
 
+mkdir -p build
+
+set +e
 xcodebuild \
     -project FaceUnlock.xcodeproj \
     -scheme FaceUnlock \
@@ -39,7 +42,20 @@ xcodebuild \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \
     PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID:-io.faceunlock.app}" \
-    build
+    build 2>&1 | tee build/xcodebuild.log
+XCODEBUILD_STATUS=${PIPESTATUS[0]:-${?}}
+set -e
+
+if [ "$XCODEBUILD_STATUS" -ne 0 ]; then
+    echo "======================================"
+    echo "XCODEBUILD FAILED with exit code: $XCODEBUILD_STATUS"
+    echo "======================================"
+    echo "--- All lines with 'error:' ---"
+    grep -in "error:" build/xcodebuild.log || true
+    echo "--- Last 100 lines of build log ---"
+    tail -n 100 build/xcodebuild.log || true
+    exit "$XCODEBUILD_STATUS"
+fi
 
 echo "[3/5] Find FaceUnlock.app"
 
