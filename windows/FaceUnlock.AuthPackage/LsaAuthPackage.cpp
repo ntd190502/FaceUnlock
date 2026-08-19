@@ -1,15 +1,20 @@
+#ifndef SECURITY_WIN32
 #define SECURITY_WIN32
+#endif
 #define WIN32_NO_STATUS
 #include <windows.h>
 #undef WIN32_NO_STATUS
 #include <ntstatus.h>
 #include <security.h>
 #include <ntsecapi.h>
-#include <ntsecpkg.h>
 #include <sddl.h>
 #include <strsafe.h>
 #include "FaceUnlockAuthCommon.h"
 #include "AuthPackageCore.h"
+
+#ifndef RPC_C_AUTHN_NONE
+#define RPC_C_AUTHN_NONE 0
+#endif
 
 // Global LSA dispatch table and package ID
 static LSA_DISPATCH_TABLE g_LsaDispatchTable;
@@ -21,49 +26,44 @@ static void LogLsa(const char* msg) {
 }
 
 // -------------------------------------------------------------------------
-// SpInitialize
+// LsaApInitializePackage (LsaApInitializePackage)
 // -------------------------------------------------------------------------
-static NTSTATUS NTAPI SpInitialize(
+extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApInitializePackage(
     ULONG_PTR PackageId,
-    PSECPKG_PARAMETERS Parameters,
-    PLSA_DISPATCH_TABLE FunctionTable
+    PLSA_DISPATCH_TABLE FunctionTable,
+    PLSA_STRING Database,
+    PLSA_STRING Confidentiality,
+    PLSA_STRING* PackageName
 ) {
     g_PackageId = PackageId;
     if (FunctionTable) {
         memcpy_s(&g_LsaDispatchTable, sizeof(g_LsaDispatchTable), FunctionTable, sizeof(LSA_DISPATCH_TABLE));
     }
 
-    // Attempt to load machine secret into memory
-    FaceUnlockAuth::AuthPackageCore::LoadMachineSecretFromDpapi(g_MachineSecret);
-    LogLsa("[FaceUnlockAuthPackage] SpInitialize completed\n");
-    return STATUS_SUCCESS;
-}
-
-// -------------------------------------------------------------------------
-// SpShutDown
-// -------------------------------------------------------------------------
-static NTSTATUS NTAPI SpShutDown() {
-    if (!g_MachineSecret.empty()) {
-        SecureZeroMemory(g_MachineSecret.data(), g_MachineSecret.size());
-        g_MachineSecret.clear();
+    if (PackageName) {
+        auto* pName = static_cast<PLSA_STRING>(
+            g_LsaDispatchTable.AllocateLsaHeap
+                ? g_LsaDispatchTable.AllocateLsaHeap(sizeof(LSA_STRING))
+                : LocalAlloc(LMEM_ZEROINIT, sizeof(LSA_STRING))
+        );
+        if (pName) {
+            static const char kName[] = FACEUNLOCK_AUTHPACKAGE_NAME_A;
+            pName->Length = static_cast<USHORT>(strlen(kName));
+            pName->MaximumLength = pName->Length + 1;
+            pName->Buffer = static_cast<PCHAR>(
+                g_LsaDispatchTable.AllocateLsaHeap
+                    ? g_LsaDispatchTable.AllocateLsaHeap(pName->MaximumLength)
+                    : LocalAlloc(LMEM_ZEROINIT, pName->MaximumLength)
+            );
+            if (pName->Buffer) {
+                memcpy_s(pName->Buffer, pName->MaximumLength, kName, pName->MaximumLength);
+            }
+            *PackageName = pName;
+        }
     }
-    LogLsa("[FaceUnlockAuthPackage] SpShutDown completed\n");
-    return STATUS_SUCCESS;
-}
 
-// -------------------------------------------------------------------------
-// SpGetInfo
-// -------------------------------------------------------------------------
-static NTSTATUS NTAPI SpGetInfo(PSecPkgInfoW PackageInfo) {
-    if (!PackageInfo) return STATUS_INVALID_PARAMETER;
-
-    PackageInfo->fCapabilities = SECPKG_FLAG_LOGON | SECPKG_FLAG_ACCEPT_WIN32_NAME;
-    PackageInfo->wVersion      = 1;
-    PackageInfo->wRPCID        = RPC_C_AUTHN_NONE;
-    PackageInfo->cbMaxToken    = sizeof(FACEUNLOCK_LOGON_V1);
-    PackageInfo->Name          = const_cast<PWSTR>(FACEUNLOCK_AUTHPACKAGE_NAME_W);
-    PackageInfo->Comment       = const_cast<PWSTR>(FACEUNLOCK_AUTHPACKAGE_COMMENT_W);
-
+    FaceUnlockAuth::AuthPackageCore::LoadMachineSecretFromDpapi(g_MachineSecret);
+    LogLsa("[FaceUnlockAuthPackage] LsaApInitializePackage completed\n");
     return STATUS_SUCCESS;
 }
 
@@ -80,9 +80,9 @@ static NTSTATUS NTAPI SpAcceptCredentials(
 }
 
 // -------------------------------------------------------------------------
-// SpLogonUserEx2
+// LsaApLogonUserEx2
 // -------------------------------------------------------------------------
-static NTSTATUS NTAPI SpLogonUserEx2(
+extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApLogonUserEx2(
     PLSA_CLIENT_REQUEST ClientRequest,
     SECURITY_LOGON_TYPE LogonType,
     PVOID ProtocolSubmitBuffer,
@@ -195,83 +195,53 @@ static NTSTATUS NTAPI SpLogonUserEx2(
         *TokenInformationType = LsaTokenInformationV1;
     }
 
-    LogLsa("[FaceUnlockAuthPackage] SpLogonUserEx2 succeeded with valid token info\n");
+    LogLsa("[FaceUnlockAuthPackage] LsaApLogonUserEx2 succeeded with valid token info\n");
     return STATUS_SUCCESS;
 }
 
 // -------------------------------------------------------------------------
-// Package Function Tables
+// Other LSA AP entry points
 // -------------------------------------------------------------------------
-static SECPKG_USER_FUNCTION_TABLE g_UserFunctionTable = {
-    nullptr, // InstanceInit
-    nullptr, // InstanceShutdown
-    nullptr, // SetContextAttributes
-    nullptr, // QueryContextAttributes
-};
-
-static SECPKG_FUNCTION_TABLE g_FunctionTable = {
-    SpInitialize,
-    SpShutDown,
-    SpGetInfo,
-    SpAcceptCredentials,
-    nullptr, // SpAcquireCredentialsHandle
-    nullptr, // SpQueryCredentialsAttributes
-    nullptr, // SpFreeCredentialsHandle
-    nullptr, // SpSaveCredentials
-    nullptr, // SpGetCredentials
-    nullptr, // SpDeleteCredentials
-    nullptr, // SpInitLsaModeContext
-    nullptr, // SpAcceptLsaModeContext
-    nullptr, // SpDeleteContext
-    nullptr, // SpApplyControlToken
-    nullptr, // SpGetUserInfo
-    nullptr, // SpGetExtendedInformation
-    nullptr, // SpQueryContextAttributes
-    nullptr, // SpAddCredentials
-    nullptr, // SpSetContextAttributes
-    nullptr, // SpSetCredentialsAttributes
-    nullptr, // SpExportSecurityContext
-    nullptr, // SpImportSecurityContext
-    nullptr, // SpFormatCredentials
-    nullptr, // SpMarshallSupplementalCreds
-    nullptr, // SpExportHypotheticalContext
-    nullptr, // SpLogonTerminated
-    SpLogonUserEx2
-};
-
-// -------------------------------------------------------------------------
-// SpLsaModeInitialize Export
-// -------------------------------------------------------------------------
-extern "C" __declspec(dllexport) NTSTATUS NTAPI SpLsaModeInitialize(
-    ULONG LsaVersion,
-    PULONG PackageVersion,
-    PSECPKG_FUNCTION_TABLE* ppTables,
-    PULONG pcTables
+extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApCallPackage(
+    PLSA_CLIENT_REQUEST ClientRequest,
+    PVOID ProtocolSubmitBuffer,
+    PVOID ClientBufferBase,
+    ULONG SubmitBufferSize,
+    PVOID* ProtocolReturnBuffer,
+    PULONG ReturnBufferSize,
+    PNTSTATUS ProtocolStatus
 ) {
-    if (!PackageVersion || !ppTables || !pcTables) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    *PackageVersion = SECPKG_INTERFACE_VERSION;
-    *ppTables = &g_FunctionTable;
-    *pcTables = 1;
-
-    return STATUS_SUCCESS;
+    if (ProtocolStatus) *ProtocolStatus = STATUS_NOT_SUPPORTED;
+    return STATUS_NOT_SUPPORTED;
 }
 
-extern "C" __declspec(dllexport) NTSTATUS NTAPI SpUserModeInitialize(
-    ULONG LsaVersion,
-    PULONG PackageVersion,
-    PSECPKG_USER_FUNCTION_TABLE* ppTables,
-    PULONG pcTables
+extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApCallPackageUntrusted(
+    PLSA_CLIENT_REQUEST ClientRequest,
+    PVOID ProtocolSubmitBuffer,
+    PVOID ClientBufferBase,
+    ULONG SubmitBufferSize,
+    PVOID* ProtocolReturnBuffer,
+    PULONG ReturnBufferSize,
+    PNTSTATUS ProtocolStatus
 ) {
-    if (!PackageVersion || !ppTables || !pcTables) {
-        return STATUS_INVALID_PARAMETER;
-    }
+    if (ProtocolStatus) *ProtocolStatus = STATUS_NOT_SUPPORTED;
+    return STATUS_NOT_SUPPORTED;
+}
 
-    *PackageVersion = SECPKG_INTERFACE_VERSION;
-    *ppTables = &g_UserFunctionTable;
-    *pcTables = 1;
+extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApCallPackagePassthrough(
+    PLSA_CLIENT_REQUEST ClientRequest,
+    PVOID ProtocolSubmitBuffer,
+    PVOID ClientBufferBase,
+    ULONG SubmitBufferSize,
+    PVOID* ProtocolReturnBuffer,
+    PULONG ReturnBufferSize,
+    PNTSTATUS ProtocolStatus
+) {
+    if (ProtocolStatus) *ProtocolStatus = STATUS_NOT_SUPPORTED;
+    return STATUS_NOT_SUPPORTED;
+}
 
-    return STATUS_SUCCESS;
+extern "C" __declspec(dllexport) VOID NTAPI LsaApLogonTerminated(
+    PLUID LogonId
+) {
 }

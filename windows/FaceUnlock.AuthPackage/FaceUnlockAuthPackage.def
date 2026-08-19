@@ -1,4 +1,8 @@
 LIBRARY FaceUnlockAuthPackage
 EXPORTS
-    SpLsaModeInitialize
-    SpUserModeInitialize
+    LsaApInitializePackage
+    LsaApLogonUserEx2
+    LsaApCallPackage
+    LsaApCallPackageUntrusted
+    LsaApCallPackagePassthrough
+    LsaApLogonTerminated
