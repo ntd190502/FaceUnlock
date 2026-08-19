@@ -1,5 +1,6 @@
 // FaceUnlockCredentialProvider.cpp
 // All critical COM lifetime, async safety, and CredentialsChanged loop bugs fixed.
+// Pure COM AddRef / Release lifetime model throughout — no std::shared_ptr on COM objects.
 // See DEBUGGING.md for crash recovery instructions.
 
 #include "FaceUnlockCredentialProvider.h"
@@ -9,7 +10,6 @@
 #include <string>
 #include <thread>
 #include <mutex>
-#include <memory>
 #include <atomic>
 #include <strsafe.h>
 #include <shlwapi.h>
@@ -19,6 +19,19 @@
 #include <ntsecapi.h>
 #include <initguid.h>
 #include <propkey.h>
+
+// Diagnostic lifetime counters (pure COM tracking)
+static std::atomic<LONG> g_credentialCtorCount{ 0 };
+static std::atomic<LONG> g_credentialDtorCount{ 0 };
+
+extern "C" {
+    LONG WINAPI GetCredentialCtorCount() {
+        return g_credentialCtorCount.load(std::memory_order_seq_cst);
+    }
+    LONG WINAPI GetCredentialDtorCount() {
+        return g_credentialDtorCount.load(std::memory_order_seq_cst);
+    }
+}
 
 // Define PKEY_Identity_QualifiedUserName if not defined
 // {50d94ae0-5bc7-4b05-b8c3-edd914298d3e}, 100
@@ -60,7 +73,6 @@ enum class WindowsAccountType {
     Unknown
 };
 
-// FIX #5: Use std::wstring::npos consistently (was mixing std::string::npos)
 static WindowsAccountType DetectAccountType(const std::wstring& username, const std::wstring& /*sid*/) {
     if (username.find(L"MicrosoftAccount\\") == 0 || username.find(L"@") != std::wstring::npos) {
         return WindowsAccountType::MicrosoftAccount;
@@ -157,20 +169,20 @@ static HRESULT DuplicateString(PCWSTR src, PWSTR* dst) {
 // ============================================================
 // FaceUnlockCredential
 // ============================================================
-// Thread safety model:
-//   stateMutex_ protects all mutable state including events_.
-//   events_ is AddRef'd on Advise, Release'd on UnAdvise.
-//   Async thread captures events_ with AddRef before use; holds
-//   a shared_ptr<FaceUnlockCredential> so the object stays alive.
-//   Thread signals cancel via cancelFlag_ (atomic bool).
-//   UnAdvise sets cancelFlag_ so thread exits IPC loop early.
+// PURE COM LIFETIME MODEL:
+//   - Lifetime is controlled SOLELY by InterlockedIncrement(&refs_) / InterlockedDecrement(&refs_).
+//   - Zero usage of std::shared_ptr.
+//   - Async worker thread holds a COM reference acquired via this->AddRef() before spawning.
+//   - Worker thread uses an RAII release guard to ensure this->Release() is executed exactly once on all paths.
+//   - events_ is AddRef'd on Advise, Release'd on UnAdvise.
+//   - Async thread snapshots events_ under mutex with AddRef, uses it, then Releases it.
+//   - UnAdvise sets cancelFlag_ (atomic<bool>) so the IPC loop in the worker exits promptly.
 // ============================================================
 
 class FaceUnlockCredential final : public ICredentialProviderCredential2 {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
 
-    // FIX #4: events_ guarded by mutex; AddRef/Release managed in Advise/UnAdvise
     std::mutex                               stateMutex_;
     ICredentialProviderCredentialEvents*     events_ = nullptr;
 
@@ -186,18 +198,12 @@ class FaceUnlockCredential final : public ICredentialProviderCredential2 {
     std::wstring activeRequestId_;
     std::wstring approvedRequestId_;
 
-    // FIX #6: atomic cancel flag so async thread can exit early on UnAdvise/destructor
     std::atomic<bool> cancelFlag_{ false };
 
-    // FIX #1: shared_ptr self-reference kept alive for the duration of the async thread
-    // The thread captures a shared_ptr<FaceUnlockCredential> so the object
-    // is not deleted while the thread runs, even after LogonUI calls Release().
-    // We use a separate aliased shared_ptr trick:
-    std::shared_ptr<FaceUnlockCredential> selfForThread_; // set by BeginAsyncAuth
-
-    // Private destructor guard — object can only die via Release()
     ~FaceUnlockCredential() {
-        // Ensure any pending async has a chance to read cancelFlag_
+        g_credentialDtorCount.fetch_add(1, std::memory_order_seq_cst);
+
+        // Ensure any pending async knows to discard/cancel
         cancelFlag_.store(true, std::memory_order_seq_cst);
 
         // Wipe sensitive data
@@ -206,12 +212,15 @@ class FaceUnlockCredential final : public ICredentialProviderCredential2 {
         SecureZeroMemory(userSid_,           sizeof(userSid_));
         SecureZeroMemory(userQualifiedName_, sizeof(userQualifiedName_));
 
-        // events_ must already be null (UnAdvise called before destruction)
-        // but defensively release if not
+        // Defensively release events_ if UnAdvise was not called
         if (events_) {
             events_->Release();
             events_ = nullptr;
         }
+
+        char logMsg[256];
+        StringCchPrintfA(logMsg, ARRAYSIZE(logMsg), "Credential dtor: ptr=%p", this);
+        AppendCpLog(logMsg);
     }
 
 public:
@@ -219,7 +228,9 @@ public:
                          PCWSTR sid, PCWSTR qualifiedUsername)
         : usage_(cpus)
     {
-        if (sid)             StringCchCopyW(userSid_,           ARRAYSIZE(userSid_),           sid);
+        g_credentialCtorCount.fetch_add(1, std::memory_order_seq_cst);
+
+        if (sid) StringCchCopyW(userSid_, ARRAYSIZE(userSid_), sid);
         if (qualifiedUsername) {
             StringCchCopyW(userQualifiedName_, ARRAYSIZE(userQualifiedName_), qualifiedUsername);
             StringCchCopyW(username_,          ARRAYSIZE(username_),          qualifiedUsername);
@@ -235,12 +246,6 @@ public:
         StringCchPrintfA(logMsg, ARRAYSIZE(logMsg),
             "Credential ctor: ptr=%p account_type=%s", this, AccountTypeToString(accountType_));
         AppendCpLog(logMsg);
-    }
-
-    // Must be called once after construction to establish the shared_ptr self-reference
-    // used by async threads. Provider calls this after new FaceUnlockCredential().
-    void InitSharedSelf(std::shared_ptr<FaceUnlockCredential> self) {
-        selfForThread_ = self;
     }
 
     // ----------------------------------------------------------
@@ -268,7 +273,10 @@ public:
 
     IFACEMETHODIMP_(ULONG) Release() override {
         LONG r = InterlockedDecrement(&refs_);
-        if (r == 0) delete this;
+        if (r == 0) {
+            delete this;
+            return 0;
+        }
         return static_cast<ULONG>(r);
     }
 
@@ -285,8 +293,6 @@ public:
     // ----------------------------------------------------------
     // ICredentialProviderCredential
     // ----------------------------------------------------------
-
-    // FIX #4: AddRef events pointer; store under mutex
     IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* pcpce) override {
         std::lock_guard<std::mutex> lock(stateMutex_);
         if (events_) {
@@ -299,15 +305,23 @@ public:
         return S_OK;
     }
 
-    // FIX #6: Release events pointer + set cancel flag
     IFACEMETHODIMP UnAdvise() override {
         cancelFlag_.store(true, std::memory_order_seq_cst);
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        if (events_) {
-            events_->Release();
-            events_ = nullptr;
+        std::wstring reqToCancel;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (events_) {
+                events_->Release();
+                events_ = nullptr;
+            }
+            if (authInProgress_ && !activeRequestId_.empty()) {
+                reqToCancel = activeRequestId_;
+            }
         }
-        AppendCpLog("UnAdvise called – cancel flag set");
+        if (!reqToCancel.empty()) {
+            FaceUnlockIpcClient::CancelRequest(reqToCancel, 1000);
+        }
+        AppendCpLog("UnAdvise called – cancel flag set & events cleared");
         return S_OK;
     }
 
@@ -318,7 +332,6 @@ public:
         return S_OK;
     }
 
-    // FIX #7: Release mutex before calling blocking IPC
     IFACEMETHODIMP SetDeselected() override {
         AppendCpLog("Tile deselected");
         cancelFlag_.store(true, std::memory_order_seq_cst);
@@ -340,7 +353,7 @@ public:
             SecureZeroMemory(password_, sizeof(password_));
             StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_), L"Ready");
         }
-        // Blocking IPC calls OUTSIDE the mutex (FIX #7)
+        // Non-blocking cancellation and release calls outside mutex
         if (!reqToCancel.empty()) {
             FaceUnlockIpcClient::CancelRequest(reqToCancel, 2000);
         }
@@ -372,7 +385,6 @@ public:
             *pcpfis = CPFIS_NONE;
             return S_OK;
         case FID_USERNAME:
-            // FIX #3: visibility controlled by GetFieldState, NOT SetFieldState from thread
             *pcpfs  = faceIdApproved_ ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
             *pcpfis = CPFIS_NONE;
             return S_OK;
@@ -445,10 +457,11 @@ public:
 
     // ---------------------------------------------------------------
     // GetSerialization
-    // FIX #2: atomic check-then-set authInProgress_ in one lock scope
-    // FIX #3: NO SetFieldState from this or any background thread
-    // FIX #8: ReserveGrant is non-blocking (moved to after Face ID thread)
-    // FIX #11: Correct CPGSR constants
+    // State machine:
+    //   - Not approved & Not in progress -> start async worker (explicit user submit)
+    //   - Not approved & In progress -> return pending without spawning another thread
+    //   - Approved & Empty password -> prompt for password
+    //   - Approved & Password entered -> reserve grant & pack Windows credentials
     // ---------------------------------------------------------------
     IFACEMETHODIMP GetSerialization(
         CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
@@ -459,8 +472,7 @@ public:
         if (!pcpgsr || !pcpcs || !ppszOptionalStatusText || !pcpsiOptionalStatusIcon)
             return E_POINTER;
 
-        // Safe defaults
-        *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;  // FIX #11
+        *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
         pcpcs->clsidCredentialProvider = CLSID_FaceUnlockProvider;
         pcpcs->rgbSerialization  = nullptr;
         pcpcs->cbSerialization   = 0;
@@ -468,7 +480,6 @@ public:
         *ppszOptionalStatusText  = nullptr;
         *pcpsiOptionalStatusIcon = CPSI_NONE;
 
-        // Snapshot and potentially start auth — all in ONE lock scope (FIX #2)
         bool doStartAuth  = false;
         bool isApproved   = false;
         bool inProgress   = false;
@@ -486,7 +497,6 @@ public:
             acctType    = accountType_;
 
             if (!isApproved && !inProgress) {
-                // AzureAD not supported
                 if (acctType == WindowsAccountType::AzureAD) {
                     StringCchCopyW(statusMessage_, ARRAYSIZE(statusMessage_),
                         L"AzureAD account not supported yet");
@@ -497,7 +507,6 @@ public:
                     return S_OK;
                 }
 
-                // Atomic check-and-set (FIX #2): set inProgress = true HERE inside the lock
                 GUID guid;
                 CoCreateGuid(&guid);
                 WCHAR guidStr[64] = { 0 };
@@ -515,17 +524,15 @@ public:
             }
         }
 
-        // --- Not yet approved: either waiting or start new auth ---
         if (!isApproved) {
             if (inProgress && !doStartAuth) {
-                // Already in progress — just update status text
+                // Auth already running - avoid spawning another thread
                 *pcpsiOptionalStatusIcon = CPSI_WARNING;
                 DuplicateString(L"Waiting for iPhone Face ID approval...", ppszOptionalStatusText);
                 return S_OK;
             }
 
             if (doStartAuth) {
-                // Update status text safely (this is LogonUI thread, not background)
                 ICredentialProviderCredentialEvents* eventsSnap = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(stateMutex_);
@@ -537,28 +544,31 @@ public:
                     eventsSnap->Release();
                 }
 
-                // FIX #1: Thread holds shared_ptr to keep object alive.
-                // FIX #3: Thread does NOT call SetFieldState — only SetFieldString.
-                // FIX #6: Thread checks cancelFlag_ to exit early after UnAdvise.
-                std::shared_ptr<FaceUnlockCredential> selfRef = selfForThread_;
-                if (!selfRef) {
-                    // Fallback: if InitSharedSelf was not called, just AddRef (legacy safe path)
-                    AddRef();
-                    selfRef.reset(this, [](FaceUnlockCredential* p) { p->Release(); });
-                }
+                // PURE COM LIFETIME: AddRef() before spawning thread
+                this->AddRef();
 
-                std::thread([selfRef, reqId, usageStr, userStr]() {
+                std::thread([this, reqId, usageStr, userStr]() {
+                    // RAII ReleaseGuard ensures this->Release() is called on EVERY exit path
+                    struct ComReleaseGuard {
+                        FaceUnlockCredential* p;
+                        ~ComReleaseGuard() {
+                            if (p) {
+                                p->Release();
+                            }
+                        }
+                    } guard{ this };
+
                     char logStart[128];
                     StringCchPrintfA(logStart, ARRAYSIZE(logStart),
-                        "Async Face ID thread started reqId prefix=%.16ls", reqId.c_str());
+                        "Async Face ID thread started reqId=%.16ls", reqId.c_str());
                     AppendCpLog(logStart);
 
+                    // Cancellation-aware RequestUnlock with cancelToken
                     FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(
-                        reqId, usageStr, userStr, 90000);
+                        reqId, usageStr, userStr, 90000, &this->cancelFlag_);
 
-                    // Cancelled before response?
-                    if (selfRef->cancelFlag_.load(std::memory_order_seq_cst)) {
-                        AppendCpLog("Async thread: cancel flag set, discarding result");
+                    if (this->cancelFlag_.load(std::memory_order_seq_cst)) {
+                        AppendCpLog("Async thread: cancelled, exiting safely");
                         return;
                     }
 
@@ -567,86 +577,71 @@ public:
                     StringCchCopyW(newStatus, ARRAYSIZE(newStatus), L"FaceUnlock error");
 
                     {
-                        std::lock_guard<std::mutex> lock(selfRef->stateMutex_);
-                        if (selfRef->activeRequestId_ == reqId) {
-                            selfRef->authInProgress_ = false;
+                        std::lock_guard<std::mutex> lock(this->stateMutex_);
+                        if (this->activeRequestId_ == reqId) {
+                            this->authInProgress_ = false;
                             if (ipcResult.ok && ipcResult.status == L"approved") {
-                                selfRef->faceIdApproved_      = true;
-                                selfRef->approvedRequestId_   = reqId;
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_),
+                                this->faceIdApproved_      = true;
+                                this->approvedRequestId_   = reqId;
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_),
                                     L"Face ID approved. Enter Windows password.");
                                 success = true;
                             } else if (ipcResult.status == L"rejected") {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_), L"Face ID rejected");
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_), L"Face ID rejected");
                             } else if (ipcResult.status == L"timeout") {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_),
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_),
                                     L"FaceUnlock request timed out");
                             } else if (ipcResult.status == L"not_paired") {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_),
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_),
                                     L"FaceUnlock is not paired");
                             } else if (ipcResult.status == L"service_not_running") {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_),
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_),
                                     L"FaceUnlock Service is not running");
                             } else if (ipcResult.status == L"cancelled") {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_),
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_),
                                     L"Face ID cancelled");
                             } else {
-                                StringCchCopyW(selfRef->statusMessage_,
-                                    ARRAYSIZE(selfRef->statusMessage_), L"FaceUnlock error");
+                                StringCchCopyW(this->statusMessage_,
+                                    ARRAYSIZE(this->statusMessage_), L"FaceUnlock error");
                             }
                             StringCchCopyW(newStatus, ARRAYSIZE(newStatus),
-                                selfRef->statusMessage_);
+                                this->statusMessage_);
                         }
                     }
 
-                    // Check cancel again before touching events
-                    if (selfRef->cancelFlag_.load(std::memory_order_seq_cst)) {
-                        AppendCpLog("Async thread: cancel flag set after IPC, not notifying UI");
+                    if (this->cancelFlag_.load(std::memory_order_seq_cst)) {
+                        AppendCpLog("Async thread: cancel flag set after IPC, skipping UI callback");
                         return;
                     }
 
-                    // FIX #4: Safely snap events_ with AddRef under mutex
+                    // Safely snapshot events_ with AddRef
                     ICredentialProviderCredentialEvents* evtSnap = nullptr;
                     {
-                        std::lock_guard<std::mutex> lock(selfRef->stateMutex_);
-                        evtSnap = selfRef->events_;
+                        std::lock_guard<std::mutex> lock(this->stateMutex_);
+                        evtSnap = this->events_;
                         if (evtSnap) evtSnap->AddRef();
                     }
 
                     if (evtSnap) {
-                        // FIX #3: ONLY update status text string — NO SetFieldState calls.
-                        // LogonUI will call GetFieldState on its own schedule.
-                        // This eliminates the CredentialsChanged re-enumeration loop.
-                        evtSnap->SetFieldString(selfRef.get(), FID_STATUS_TEXT, newStatus);
-
-                        if (success) {
-                            // Signal LogonUI that credentials have changed so it re-queries
-                            // GetFieldState which will now reveal USERNAME/PASSWORD fields.
-                            // Use CredentialsChanged on the PROVIDER level (not SetFieldState)
-                            // to avoid recursive re-enumeration.
-                            // NOTE: We deliberately call SetFieldString only.
-                            // The field visibility change (USERNAME/PASSWORD) will be picked up
-                            // by LogonUI when it calls GetFieldState after this notification.
-                            // This is safe because GetFieldState is pure and idempotent.
-                        }
-
+                        // Update status text only — no SetFieldState to prevent re-enumeration loop
+                        evtSnap->SetFieldString(this, FID_STATUS_TEXT, newStatus);
                         evtSnap->Release();
                     }
 
-                    AppendCpLog(success ? "Async Face ID: approved" : "Async Face ID: not approved");
+                    AppendCpLog(success ? "Async Face ID: approved" : "Async Face ID: finished non-approved");
                 }).detach();
             }
 
             return S_OK;
         }
 
-        // --- Face ID approved. Check password. ---
+        // --- Face ID approved. Check password ---
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
             if (password_[0] == L'\0') {
@@ -656,8 +651,7 @@ public:
             }
         }
 
-        // --- Reserve the one-time short-lived grant (FIX #8: still on LogonUI thread but
-        //     only reached AFTER user clicks Submit with Face ID already approved) ---
+        // --- Reserve grant ---
         FaceUnlockIpcResult reserveResult = FaceUnlockIpcClient::ReserveGrant(approvedReq, 5000);
         if (!reserveResult.ok) {
             {
@@ -842,13 +836,16 @@ public:
 // ============================================================
 // Provider (ICredentialProvider + ICredentialProviderSetUserArray)
 // ============================================================
+// PURE COM LIFETIME MODEL:
+//   - Holds raw FaceUnlockCredential* pointers.
+//   - When storing, calls AddRef() on the COM object.
+//   - On clear / destructor, calls Release() on each COM object.
+// ============================================================
 
 class Provider final : public ICredentialProvider, public ICredentialProviderSetUserArray {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
-
-    // Credentials are held as shared_ptr so async threads can keep them alive
-    std::vector<std::shared_ptr<FaceUnlockCredential>> credentials_;
+    std::vector<FaceUnlockCredential*> credentials_;
 
 public:
     Provider() = default;
@@ -858,7 +855,10 @@ public:
     }
 
     void ClearCredentials() {
-        credentials_.clear(); // shared_ptr destructors Release/delete
+        for (auto* cred : credentials_) {
+            if (cred) cred->Release();
+        }
+        credentials_.clear();
     }
 
     // IUnknown
@@ -883,7 +883,10 @@ public:
 
     IFACEMETHODIMP_(ULONG) Release() override {
         LONG r = InterlockedDecrement(&refs_);
-        if (r == 0) delete this;
+        if (r == 0) {
+            delete this;
+            return 0;
+        }
         return static_cast<ULONG>(r);
     }
 
@@ -907,13 +910,10 @@ public:
                 pUser->GetSid(&sid);
                 pUser->GetStringValue(PKEY_Identity_QualifiedUserName_Local, &qualifiedName);
 
-                auto* raw = new(std::nothrow) FaceUnlockCredential(usage_, sid, qualifiedName);
-                if (raw) {
-                    // Build shared_ptr with custom deleter that calls Release()
-                    std::shared_ptr<FaceUnlockCredential> sp(raw,
-                        [](FaceUnlockCredential* p) { p->Release(); });
-                    raw->InitSharedSelf(sp);
-                    credentials_.push_back(std::move(sp));
+                auto* cred = new(std::nothrow) FaceUnlockCredential(usage_, sid, qualifiedName);
+                if (cred) {
+                    // Raw COM pointer stored directly (refs_ starts at 1)
+                    credentials_.push_back(cred);
                 }
 
                 if (sid)          CoTaskMemFree(sid);
@@ -932,12 +932,9 @@ public:
         }
         usage_ = cpus;
         if (credentials_.empty()) {
-            auto* raw = new(std::nothrow) FaceUnlockCredential(cpus, nullptr, nullptr);
-            if (raw) {
-                std::shared_ptr<FaceUnlockCredential> sp(raw,
-                    [](FaceUnlockCredential* p) { p->Release(); });
-                raw->InitSharedSelf(sp);
-                credentials_.push_back(std::move(sp));
+            auto* cred = new(std::nothrow) FaceUnlockCredential(cpus, nullptr, nullptr);
+            if (cred) {
+                credentials_.push_back(cred);
             }
         }
         return S_OK;
@@ -988,7 +985,7 @@ public:
         if (dwIndex >= static_cast<DWORD>(credentials_.size())) return E_INVALIDARG;
 
         credentials_[dwIndex]->AddRef();
-        *ppcpc = credentials_[dwIndex].get();
+        *ppcpc = credentials_[dwIndex];
         return S_OK;
     }
 };

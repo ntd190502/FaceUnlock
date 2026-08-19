@@ -2,7 +2,7 @@
 // Standalone LogonUI-safety harness for FaceUnlockCredentialProvider.dll
 //
 // Tests:
-//   1. DllGetClassObject → IClassFactory → CreateInstance → ICredentialProvider
+//   1. DllGetClassObject -> IClassFactory -> CreateInstance -> ICredentialProvider
 //   2. SetUsageScenario / SetUserArray (mock)
 //   3. GetFieldDescriptorCount / GetFieldDescriptorAt
 //   4. GetCredentialCount / GetCredentialAt
@@ -10,12 +10,11 @@
 //   6. Advise / UnAdvise
 //   7. SetSelected / SetDeselected
 //   8. Full Release (1000 iterations)
-//   9. Async destruction during auth (UnAdvise + Release while thread running)
-//  10. IPC unavailable (no service — just verifies no crash/hang)
-//  11. COM ref count audit
-//
-// Build: see CMakeLists.txt in this directory.
-// Run: CredentialProviderHarness.exe [path\to\FaceUnlockCredentialProvider.dll]
+//   9. Async destruction during auth (UnAdvise + Release all COM refs while worker is running)
+//  10. Strict COM Lifetime & Ctor/Dtor balance test (ctor_count == dtor_count)
+//  11. IPC unavailable (no service — verifies no crash, hang, or stale callback)
+//  12. CredentialsChanged loop audit (SetFieldState must not be called from thread)
+//  13. DllCanUnloadNow
 //
 // EXIT CODE: 0 = all tests passed, 1 = one or more tests failed.
 
@@ -62,7 +61,6 @@ static void CheckHR(HRESULT hr, const char* name) {
 }
 
 // ----------------------------------------------------------------- mock user -
-// Minimal ICredentialProviderUser mock
 class MockUser final : public ICredentialProviderUser {
     LONG refs_ = 1;
 public:
@@ -82,7 +80,6 @@ public:
     }
     IFACEMETHODIMP GetSid(PWSTR* ppszSid) override {
         if (!ppszSid) return E_POINTER;
-        // Allocate a fake SID string
         size_t len = wcslen(L"S-1-5-21-0000-HARNESS") + 1;
         *ppszSid = (PWSTR)CoTaskMemAlloc(len * sizeof(WCHAR));
         if (!*ppszSid) return E_OUTOFMEMORY;
@@ -101,7 +98,6 @@ public:
     IFACEMETHODIMP GetValue(REFPROPERTYKEY, PROPVARIANT*) override { return E_NOTIMPL; }
 };
 
-// Minimal ICredentialProviderUserArray mock
 class MockUserArray final : public ICredentialProviderUserArray {
     LONG refs_ = 1;
     MockUser* user_ = nullptr;
@@ -141,7 +137,6 @@ public:
     }
 };
 
-// Minimal ICredentialProviderCredentialEvents mock
 class MockEvents final : public ICredentialProviderCredentialEvents {
     LONG refs_ = 1;
     std::atomic<int> fieldStringCalls_{ 0 };
@@ -188,10 +183,14 @@ public:
 // ------------------------------------------------------------------ DLL load -
 typedef HRESULT(STDAPICALLTYPE* PFN_DllGetClassObject)(REFCLSID, REFIID, LPVOID*);
 typedef HRESULT(STDAPICALLTYPE* PFN_DllCanUnloadNow)(void);
+typedef LONG(WINAPI* PFN_GetCredentialCtorCount)(void);
+typedef LONG(WINAPI* PFN_GetCredentialDtorCount)(void);
 
-static HMODULE       g_hDll               = nullptr;
-static PFN_DllGetClassObject  g_pfnGetClass = nullptr;
-static PFN_DllCanUnloadNow    g_pfnCanUnload = nullptr;
+static HMODULE                   g_hDll                  = nullptr;
+static PFN_DllGetClassObject      g_pfnGetClass           = nullptr;
+static PFN_DllCanUnloadNow        g_pfnCanUnload          = nullptr;
+static PFN_GetCredentialCtorCount g_pfnGetCtorCount       = nullptr;
+static PFN_GetCredentialDtorCount g_pfnGetDtorCount       = nullptr;
 
 static bool LoadDll(const wchar_t* path) {
     g_hDll = LoadLibraryW(path);
@@ -199,8 +198,11 @@ static bool LoadDll(const wchar_t* path) {
         printf("[ERROR] LoadLibraryW failed: 0x%08X\n", GetLastError());
         return false;
     }
-    g_pfnGetClass  = (PFN_DllGetClassObject) GetProcAddress(g_hDll, "DllGetClassObject");
-    g_pfnCanUnload = (PFN_DllCanUnloadNow)   GetProcAddress(g_hDll, "DllCanUnloadNow");
+    g_pfnGetClass    = (PFN_DllGetClassObject)      GetProcAddress(g_hDll, "DllGetClassObject");
+    g_pfnCanUnload   = (PFN_DllCanUnloadNow)        GetProcAddress(g_hDll, "DllCanUnloadNow");
+    g_pfnGetCtorCount = (PFN_GetCredentialCtorCount)GetProcAddress(g_hDll, "GetCredentialCtorCount");
+    g_pfnGetDtorCount = (PFN_GetCredentialDtorCount)GetProcAddress(g_hDll, "GetCredentialDtorCount");
+
     if (!g_pfnGetClass || !g_pfnCanUnload) {
         printf("[ERROR] Missing DLL exports\n");
         return false;
@@ -223,7 +225,6 @@ static ICredentialProvider* CreateProvider() {
 
 // ================================================================ TEST SUITE ===
 
-// Test 1: DllGetClassObject basic
 static void Test_DllGetClassObject() {
     printf("\n[Test 1] DllGetClassObject\n");
     IClassFactory* pFactory = nullptr;
@@ -231,31 +232,26 @@ static void Test_DllGetClassObject() {
     CheckHR(hr, "DllGetClassObject returns S_OK");
     Check(pFactory != nullptr, "IClassFactory ptr non-null");
     if (pFactory) {
-        // Wrong CLSID should fail
         GUID badGuid = {};
         IClassFactory* pBad = nullptr;
         HRESULT hr2 = g_pfnGetClass(badGuid, IID_IClassFactory, (void**)&pBad);
         Check(hr2 == CLASS_E_CLASSNOTAVAILABLE, "Wrong CLSID returns CLASS_E_CLASSNOTAVAILABLE");
         if (pBad) pBad->Release();
-
         pFactory->Release();
     }
 }
 
-// Test 2: CreateInstance + QI
 static void Test_CreateInstance() {
     printf("\n[Test 2] CreateInstance + QueryInterface\n");
     ICredentialProvider* pCP = CreateProvider();
     Check(pCP != nullptr, "CreateInstance returns non-null ICredentialProvider");
     if (!pCP) return;
 
-    // QI for ICredentialProviderSetUserArray
     ICredentialProviderSetUserArray* pSUA = nullptr;
     HRESULT hr = pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
     CheckHR(hr, "QI ICredentialProviderSetUserArray");
     if (pSUA) pSUA->Release();
 
-    // QI for bogus interface should fail
     IUnknown* pBogus = nullptr;
     GUID badIID = {};
     hr = pCP->QueryInterface(badIID, (void**)&pBogus);
@@ -264,7 +260,6 @@ static void Test_CreateInstance() {
     pCP->Release();
 }
 
-// Test 3: SetUsageScenario
 static void Test_SetUsageScenario() {
     printf("\n[Test 3] SetUsageScenario\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -282,7 +277,6 @@ static void Test_SetUsageScenario() {
     pCP->Release();
 }
 
-// Test 4: SetUserArray + GetCredentialCount
 static void Test_SetUserArray() {
     printf("\n[Test 4] SetUserArray + GetCredentialCount\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -313,7 +307,6 @@ static void Test_SetUserArray() {
     pCP->Release();
 }
 
-// Test 5: GetFieldDescriptorCount + GetFieldDescriptorAt
 static void Test_FieldDescriptors() {
     printf("\n[Test 5] GetFieldDescriptorCount + GetFieldDescriptorAt\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -338,7 +331,6 @@ static void Test_FieldDescriptors() {
         }
     }
 
-    // Out-of-range
     CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR* pOOB = nullptr;
     hr = pCP->GetFieldDescriptorAt(9999, &pOOB);
     Check(hr == E_INVALIDARG, "GetFieldDescriptorAt out-of-range returns E_INVALIDARG");
@@ -346,7 +338,6 @@ static void Test_FieldDescriptors() {
     pCP->Release();
 }
 
-// Test 6: GetCredentialAt + QI ICredentialProviderCredential2
 static void Test_GetCredentialAt() {
     printf("\n[Test 6] GetCredentialAt + QI Credential2\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -368,14 +359,12 @@ static void Test_GetCredentialAt() {
     Check(pCred != nullptr, "Credential ptr non-null");
 
     if (pCred) {
-        // QI for Credential2
         ICredentialProviderCredential2* pCred2 = nullptr;
         hr = pCred->QueryInterface(IID_ICredentialProviderCredential2, (void**)&pCred2);
         CheckHR(hr, "QI ICredentialProviderCredential2");
         if (pCred2) {
             PWSTR pszSid = nullptr;
             hr = pCred2->GetUserSid(&pszSid);
-            // S_OK or E_NOTIMPL are both valid
             Check(SUCCEEDED(hr) || hr == E_NOTIMPL, "GetUserSid succeeded or E_NOTIMPL");
             if (pszSid) CoTaskMemFree(pszSid);
             pCred2->Release();
@@ -383,7 +372,6 @@ static void Test_GetCredentialAt() {
         pCred->Release();
     }
 
-    // Out-of-range
     ICredentialProviderCredential* pOOB = nullptr;
     hr = pCP->GetCredentialAt(9999, &pOOB);
     Check(hr == E_INVALIDARG, "GetCredentialAt out-of-range returns E_INVALIDARG");
@@ -391,7 +379,6 @@ static void Test_GetCredentialAt() {
     pCP->Release();
 }
 
-// Test 7: Advise / UnAdvise
 static void Test_AdviseUnAdvise() {
     printf("\n[Test 7] Advise / UnAdvise\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -415,11 +402,9 @@ static void Test_AdviseUnAdvise() {
     HRESULT hr = pCred->Advise(mockEvt);
     CheckHR(hr, "Advise");
 
-    // Advise with null should not crash
     hr = pCred->Advise(nullptr);
     Check(SUCCEEDED(hr), "Advise(nullptr) succeeds (replaces)");
 
-    // Re-advise with real events
     auto* mockEvt2 = new MockEvents();
     hr = pCred->Advise(mockEvt2);
     CheckHR(hr, "Re-Advise with new events");
@@ -427,7 +412,6 @@ static void Test_AdviseUnAdvise() {
     hr = pCred->UnAdvise();
     CheckHR(hr, "UnAdvise");
 
-    // Double UnAdvise must not crash
     hr = pCred->UnAdvise();
     CheckHR(hr, "Double UnAdvise");
 
@@ -437,7 +421,6 @@ static void Test_AdviseUnAdvise() {
     pCP->Release();
 }
 
-// Test 8: SetSelected / SetDeselected
 static void Test_SetSelectedDeselected() {
     printf("\n[Test 8] SetSelected / SetDeselected\n");
     ICredentialProvider* pCP = CreateProvider();
@@ -469,9 +452,8 @@ static void Test_SetSelectedDeselected() {
     pCP->Release();
 }
 
-// Test 9: 1000-iteration create/enumerate/release
 static void Test_1000Iterations() {
-    printf("\n[Test 9] 1000-iteration create/enumerate/release (no crash/leak)\n");
+    printf("\n[Test 9] 1000-iteration create/enumerate/release\n");
     bool allOk = true;
     for (int i = 0; i < 1000; ++i) {
         ICredentialProvider* pCP = CreateProvider();
@@ -505,18 +487,11 @@ static void Test_1000Iterations() {
 
         pCP->Release();
     }
-    Check(allOk, "1000 iterations: no crash");
+    Check(allOk, "1000 iterations: no crash or leak");
 }
 
-// Test 10: Async destruction during auth (UnAdvise + Release while IPC thread could be running)
 static void Test_AsyncDestruction() {
-    printf("\n[Test 10] Async destruction during auth\n");
-    // The service is not running; IPC will fail quickly with "service_not_running"
-    // This test verifies:
-    //   - No access violation
-    //   - No use-after-free
-    //   - UnAdvise then Release is safe even if thread is mid-execution
-
+    printf("\n[Test 10] Async destruction during auth (worker survives external Release)\n");
     bool allOk = true;
     for (int attempt = 0; attempt < 20; ++attempt) {
         ICredentialProvider* pCP = CreateProvider();
@@ -539,7 +514,6 @@ static void Test_AsyncDestruction() {
         auto* mockEvt = new MockEvents();
         pCred->Advise(mockEvt);
 
-        // Simulate GetSerialization (which starts async thread)
         CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
         CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
         PWSTR pszStatus = nullptr;
@@ -548,8 +522,7 @@ static void Test_AsyncDestruction() {
         if (pszStatus) CoTaskMemFree(pszStatus);
         if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
 
-        // Immediately UnAdvise + Release — thread may still be running
-        // (IPC returns quickly with service_not_running, but this races intentionally)
+        // Immediately UnAdvise and Release ALL external COM refs while thread is running
         pCred->UnAdvise();
         pCred->SetDeselected();
         pCred->Release();
@@ -557,15 +530,34 @@ static void Test_AsyncDestruction() {
         mockEvt->Release();
         pCP->Release();
 
-        // Give thread a moment to complete
+        // Brief sleep to let worker complete its lifecycle
         Sleep(50);
     }
     Check(allOk, "Async destruction: 20 attempts no crash");
 }
 
-// Test 11: IPC unavailable — no crash, no hang
+static void Test_CtorDtorBalance() {
+    printf("\n[Test 11] Strict COM Lifetime & Ctor/Dtor balance\n");
+    if (!g_pfnGetCtorCount || !g_pfnGetDtorCount) {
+        printf("  [WARN] Diagnostic counter exports not available in DLL\n");
+        return;
+    }
+
+    // Give background threads a second to finish
+    Sleep(500);
+
+    LONG ctors = g_pfnGetCtorCount();
+    LONG dtors = g_pfnGetDtorCount();
+
+    printf("  Total Credential Created (ctors): %ld\n", ctors);
+    printf("  Total Credential Destroyed (dtors): %ld\n", dtors);
+
+    Check(ctors > 0, "Credential objects were created");
+    Check(ctors == dtors, "Exact COM lifetime balance: ctor_count == dtor_count");
+}
+
 static void Test_IpcUnavailable() {
-    printf("\n[Test 11] IPC unavailable — credential must not crash or hang\n");
+    printf("\n[Test 12] IPC unavailable — credential must not crash or hang\n");
     ICredentialProvider* pCP = CreateProvider();
     if (!pCP) { Fail("IpcUnavailable", "CreateInstance failed"); return; }
     pCP->SetUsageScenario(CPUS_LOGON, 0);
@@ -591,13 +583,11 @@ static void Test_IpcUnavailable() {
     PWSTR pszStatus = nullptr;
     CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
 
-    // This will start async thread; IPC will fail with service_not_running
     HRESULT hr = pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
     Check(SUCCEEDED(hr), "GetSerialization returns success (not a crash)");
     if (pszStatus) CoTaskMemFree(pszStatus);
     if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
 
-    // Wait briefly for async thread to complete (IPC should fail quickly)
     Sleep(500);
 
     pCred->UnAdvise();
@@ -607,9 +597,8 @@ static void Test_IpcUnavailable() {
     Pass("IPC unavailable: no crash, no hang");
 }
 
-// Test 12: No CredentialsChanged loop — SetFieldState must NOT be called from thread
 static void Test_NoCredentialsChangedLoop() {
-    printf("\n[Test 12] No CredentialsChanged loop\n");
+    printf("\n[Test 13] No CredentialsChanged loop\n");
     ICredentialProvider* pCP = CreateProvider();
     if (!pCP) { Fail("NoCCLoop", "CreateInstance failed"); return; }
     pCP->SetUsageScenario(CPUS_LOGON, 0);
@@ -638,11 +627,9 @@ static void Test_NoCredentialsChangedLoop() {
     if (pszStatus) CoTaskMemFree(pszStatus);
     if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
 
-    // Wait for thread
     Sleep(600);
 
     int setFieldStateCalls = mockEvt->getFieldStateCalls();
-    // Fixed code must NOT call SetFieldState from background thread
     Check(setFieldStateCalls == 0,
         "SetFieldState was NOT called from background thread (no CredentialsChanged loop)");
 
@@ -652,19 +639,15 @@ static void Test_NoCredentialsChangedLoop() {
     pCP->Release();
 }
 
-// Test 13: DllCanUnloadNow
 static void Test_DllCanUnloadNow() {
-    printf("\n[Test 13] DllCanUnloadNow\n");
-    // After all objects released, should return S_OK
+    printf("\n[Test 14] DllCanUnloadNow\n");
     HRESULT hr = g_pfnCanUnload();
-    // S_OK = can unload, S_FALSE = cannot. Both are valid depending on state.
     Check(SUCCEEDED(hr), "DllCanUnloadNow returns valid HRESULT");
 }
 
-// ================================================================== main ====
 int wmain(int argc, wchar_t* argv[]) {
     printf("============================================================\n");
-    printf("  FaceUnlock Credential Provider Safety Harness\n");
+    printf("  FaceUnlock Credential Provider Safety Harness (Pure COM)\n");
     printf("============================================================\n");
 
     const wchar_t* dllPath = L"FaceUnlockCredentialProvider.dll";
@@ -685,7 +668,6 @@ int wmain(int argc, wchar_t* argv[]) {
 
     printf("DLL loaded successfully.\n");
 
-    // Run all tests
     Test_DllGetClassObject();
     Test_CreateInstance();
     Test_SetUsageScenario();
@@ -696,6 +678,7 @@ int wmain(int argc, wchar_t* argv[]) {
     Test_SetSelectedDeselected();
     Test_1000Iterations();
     Test_AsyncDestruction();
+    Test_CtorDtorBalance();
     Test_IpcUnavailable();
     Test_NoCredentialsChangedLoop();
     Test_DllCanUnloadNow();
@@ -705,13 +688,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
     printf("\n============================================================\n");
     printf("  RESULTS: %d passed, %d failed\n", g_passed, g_failed);
-    printf("============================================================\n");
-
-    if (g_failed == 0) {
-        printf("\nCP_SAFE_FOR_LOGONUI_TEST: PENDING (run harness on target machine)\n");
-    } else {
-        printf("\nCP_SAFE_FOR_LOGONUI_TEST: NO — %d test(s) failed\n", g_failed);
+    if (g_pfnGetCtorCount && g_pfnGetDtorCount) {
+        printf("  LIFETIME: %ld ctors, %ld dtors\n", g_pfnGetCtorCount(), g_pfnGetDtorCount());
     }
+    printf("============================================================\n");
 
     return (g_failed == 0) ? 0 : 1;
 }

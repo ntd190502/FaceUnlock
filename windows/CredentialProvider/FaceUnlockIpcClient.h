@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <atomic>
 
 struct FaceUnlockIpcResult {
     bool ok;
@@ -19,7 +20,8 @@ public:
         const std::wstring& requestId,
         const std::wstring& usage,
         const std::wstring& username,
-        DWORD timeoutMs = 90000
+        DWORD timeoutMs = 90000,
+        const std::atomic<bool>* cancelToken = nullptr
     );
 
     static FaceUnlockIpcResult ReserveGrant(

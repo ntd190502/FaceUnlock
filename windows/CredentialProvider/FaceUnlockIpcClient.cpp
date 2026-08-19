@@ -65,11 +65,18 @@ static long long ExtractJsonLong(const std::string& json, const std::string& key
     }
 }
 
-static HANDLE ConnectPipeWithTimeout(DWORD timeoutMs, FaceUnlockIpcResult& outErr) {
+static HANDLE ConnectPipeWithTimeout(DWORD timeoutMs, FaceUnlockIpcResult& outErr, const std::atomic<bool>* cancelToken = nullptr) {
     HANDLE hPipe = INVALID_HANDLE_VALUE;
     DWORD startTick = GetTickCount();
 
     while (true) {
+        if (cancelToken && cancelToken->load(std::memory_order_seq_cst)) {
+            outErr.ok = false;
+            outErr.status = L"cancelled";
+            outErr.message = L"Cancelled by caller";
+            return INVALID_HANDLE_VALUE;
+        }
+
         hPipe = CreateFileW(
             kPipeName,
             GENERIC_READ | GENERIC_WRITE,
@@ -92,7 +99,9 @@ static HANDLE ConnectPipeWithTimeout(DWORD timeoutMs, FaceUnlockIpcResult& outEr
             return INVALID_HANDLE_VALUE;
         }
 
-        if (!WaitNamedPipeW(kPipeName, 2000)) {
+        // Poll in small slices to remain responsive to cancelToken
+        DWORD waitSlice = (timeoutMs > 200) ? 200 : timeoutMs;
+        if (!WaitNamedPipeW(kPipeName, waitSlice)) {
             if (GetTickCount() - startTick >= timeoutMs) {
                 outErr.ok = false;
                 outErr.status = L"timeout";
@@ -136,33 +145,42 @@ static FaceUnlockIpcResult ExecuteSingleCommand(
     DWORD startTick = GetTickCount();
 
     while (true) {
-        DWORD bytesRead = 0;
-        BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-        if (!readOk || bytesRead == 0) {
-            break;
-        }
+        DWORD bytesAvailable = 0;
+        if (PeekNamedPipe(hPipe, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
+            if (bytesAvailable > 0) {
+                DWORD bytesRead = 0;
+                BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+                if (!readOk || bytesRead == 0) {
+                    break;
+                }
 
-        buffer[bytesRead] = '\0';
-        responseBuffer += buffer;
+                buffer[bytesRead] = '\0';
+                responseBuffer += buffer;
 
-        size_t newlinePos = responseBuffer.find('\n');
-        if (newlinePos != std::string::npos) {
-            std::string line = responseBuffer.substr(0, newlinePos);
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
+                size_t newlinePos = responseBuffer.find('\n');
+                if (newlinePos != std::string::npos) {
+                    std::string line = responseBuffer.substr(0, newlinePos);
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
+
+                    std::string status = ExtractJsonField(line, "status");
+                    std::string msg = ExtractJsonField(line, "message");
+                    long long exp = ExtractJsonLong(line, "expires_at");
+
+                    result.status = Utf8ToUtf16(status);
+                    result.message = Utf8ToUtf16(msg);
+                    result.expires_at = exp;
+                    result.ok = (status == successStatus);
+
+                    CloseHandle(hPipe);
+                    return result;
+                }
+            } else {
+                Sleep(20);
             }
-
-            std::string status = ExtractJsonField(line, "status");
-            std::string msg = ExtractJsonField(line, "message");
-            long long exp = ExtractJsonLong(line, "expires_at");
-
-            result.status = Utf8ToUtf16(status);
-            result.message = Utf8ToUtf16(msg);
-            result.expires_at = exp;
-            result.ok = (status == successStatus);
-
-            CloseHandle(hPipe);
-            return result;
+        } else {
+            break;
         }
 
         if (GetTickCount() - startTick >= timeoutMs) {
@@ -209,11 +227,12 @@ FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
     const std::wstring& requestId,
     const std::wstring& usage,
     const std::wstring& username,
-    DWORD timeoutMs)
+    DWORD timeoutMs,
+    const std::atomic<bool>* cancelToken)
 {
     FaceUnlockIpcResult result = { false, L"error", L"Failed to connect to FaceUnlock Service", 0 };
 
-    HANDLE hPipe = ConnectPipeWithTimeout(timeoutMs, result);
+    HANDLE hPipe = ConnectPipeWithTimeout(timeoutMs, result, cancelToken);
     if (hPipe == INVALID_HANDLE_VALUE) {
         return result;
     }
@@ -244,53 +263,70 @@ FaceUnlockIpcResult FaceUnlockIpcClient::RequestUnlock(
         return result;
     }
 
-    // Read responses line by line (handles pending progress and final response)
+    // Read responses line by line with PeekNamedPipe to support cancellation and timeout
     std::string responseBuffer;
     char buffer[1024];
 
     while (true) {
-        DWORD bytesRead = 0;
-        BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-        if (!readOk || bytesRead == 0) {
-            break;
+        if (cancelToken && cancelToken->load(std::memory_order_seq_cst)) {
+            CloseHandle(hPipe);
+            result.ok = false;
+            result.status = L"cancelled";
+            result.message = L"Request cancelled by caller";
+            return result;
         }
 
-        buffer[bytesRead] = '\0';
-        responseBuffer += buffer;
-
-        // Check if we have a full newline-delimited JSON line
-        size_t newlinePos = responseBuffer.find('\n');
-        while (newlinePos != std::string::npos) {
-            std::string line = responseBuffer.substr(0, newlinePos);
-            responseBuffer = responseBuffer.substr(newlinePos + 1);
-
-            // Trim CR if present
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
-            }
-
-            if (!line.empty()) {
-                std::string status = ExtractJsonField(line, "status");
-                std::string msg = ExtractJsonField(line, "message");
-                long long exp = ExtractJsonLong(line, "expires_at");
-
-                result.status = Utf8ToUtf16(status);
-                result.message = Utf8ToUtf16(msg);
-                result.expires_at = exp;
-
-                if (status == "approved") {
-                    result.ok = true;
-                    CloseHandle(hPipe);
-                    return result;
-                } else if (status != "pending") {
-                    // Final non-approved status (rejected, timeout, error, not_paired, busy, cancelled, etc.)
-                    result.ok = false;
-                    CloseHandle(hPipe);
-                    return result;
+        DWORD bytesAvailable = 0;
+        if (PeekNamedPipe(hPipe, nullptr, 0, nullptr, &bytesAvailable, nullptr)) {
+            if (bytesAvailable > 0) {
+                DWORD bytesRead = 0;
+                BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+                if (!readOk || bytesRead == 0) {
+                    break;
                 }
-            }
 
-            newlinePos = responseBuffer.find('\n');
+                buffer[bytesRead] = '\0';
+                responseBuffer += buffer;
+
+                // Check if we have a full newline-delimited JSON line
+                size_t newlinePos = responseBuffer.find('\n');
+                while (newlinePos != std::string::npos) {
+                    std::string line = responseBuffer.substr(0, newlinePos);
+                    responseBuffer = responseBuffer.substr(newlinePos + 1);
+
+                    // Trim CR if present
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
+
+                    if (!line.empty()) {
+                        std::string status = ExtractJsonField(line, "status");
+                        std::string msg = ExtractJsonField(line, "message");
+                        long long exp = ExtractJsonLong(line, "expires_at");
+
+                        result.status = Utf8ToUtf16(status);
+                        result.message = Utf8ToUtf16(msg);
+                        result.expires_at = exp;
+
+                        if (status == "approved") {
+                            result.ok = true;
+                            CloseHandle(hPipe);
+                            return result;
+                        } else if (status != "pending") {
+                            // Final non-approved status (rejected, timeout, error, not_paired, busy, cancelled, etc.)
+                            result.ok = false;
+                            CloseHandle(hPipe);
+                            return result;
+                        }
+                    }
+
+                    newlinePos = responseBuffer.find('\n');
+                }
+            } else {
+                Sleep(50); // Yield to prevent CPU spin while waiting for iPhone auth
+            }
+        } else {
+            break;
         }
 
         if (GetTickCount() - startTick >= timeoutMs) {
