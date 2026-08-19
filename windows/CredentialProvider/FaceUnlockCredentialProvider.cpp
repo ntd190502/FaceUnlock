@@ -11,6 +11,12 @@
 #define SECURITY_WIN32
 #include <security.h>
 #include <ntsecapi.h>
+#include <initguid.h>
+#include <propkey.h>
+
+// Define PKEY_Identity_QualifiedUserName if not defined
+// {50d94ae0-5bc7-4b05-b8c3-edd914298d3e}, 100
+DEFINE_PROPERTYKEY(PKEY_Identity_QualifiedUserName_Local, 0x50d94ae0, 0x5bc7, 0x4b05, 0xb8, 0xc3, 0xed, 0xd9, 0x14, 0x29, 0x8d, 0x3e, 100);
 
 // {64D6E84B-4969-4B59-A11A-58C3D9FA0110}
 const CLSID CLSID_FaceUnlockProvider = {0x64d6e84b, 0x4969, 0x4b59, {0xa1, 0x1a, 0x58, 0xc3, 0xd9, 0xfa, 0x01, 0x10}};
@@ -444,7 +450,6 @@ public:
                 FaceUnlockIpcResult ipcResult = FaceUnlockIpcClient::RequestUnlock(reqId, usageStr, userStr, 90000);
 
                 bool success = false;
-                std::wstring finalStatus;
 
                 {
                     std::lock_guard<std::mutex> lock(this->stateMutex_);
@@ -483,7 +488,6 @@ public:
                         this->events_->SetFieldState(this, FID_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
                     }
                     this->events_->SetFieldString(this, FID_STATUS_TEXT, this->statusMessage_);
-                    this->events_->CredentialsChanged(0);
                 }
 
                 AppendCpLog("Background async Face ID request finished");
@@ -717,7 +721,7 @@ public:
                 PWSTR sid = nullptr;
                 PWSTR qualifiedName = nullptr;
                 pUser->GetSid(&sid);
-                pUser->GetStringValue(PKEY_Identity_QualifiedUserName, &qualifiedName);
+                pUser->GetStringValue(PKEY_Identity_QualifiedUserName_Local, &qualifiedName);
 
                 auto cred = new(std::nothrow) FaceUnlockCredential(usage_, sid, qualifiedName);
                 if (cred) {
