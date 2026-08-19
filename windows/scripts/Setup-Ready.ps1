@@ -43,26 +43,37 @@ function RestoreExplorer {
 function EnsureService {
     $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     Log "[SERVICE] exists=$([bool]$svc)"
-    $expectedPath = "`"$InstallDir\FaceUnlock.Service.exe`""
+    $exePath = Join-Path $InstallDir 'FaceUnlock.Service.exe'
+    if (-not (Test-Path $exePath)) { throw "Service executable is missing: $exePath" }
+    $expectedPath = '"' + $exePath + '"'
     if (-not $svc) {
-        Log '[SERVICE] create requested'
-        & "$env:SystemRoot\System32\sc.exe" create $serviceName "binPath= $expectedPath" 'start= auto' 'DisplayName= FaceUnlock Service' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Service create failed (exit=$LASTEXITCODE)" }
-        Log '[SERVICE] create PASS'
+        Log '[SERVICE] create requested via New-Service'
+        try {
+            New-Service -Name $serviceName -BinaryPathName $expectedPath -DisplayName 'FaceUnlock Service' -StartupType Automatic -ErrorAction Stop
+            Log '[SERVICE] create PASS'
+        }
+        catch { Log "[SERVICE] create FAIL type=$($_.Exception.GetType().Name) message=$($_.Exception.Message)"; throw }
     } else {
         if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop; Log '[SERVICE] stop PASS' }
         Log '[SERVICE] repair binPath requested'
     }
-    & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Service config failed (exit=$LASTEXITCODE)" }
-    Log "[SERVICE] binpath=$expectedPath"
-    Log '[SERVICE] startup=Automatic'
+    if ($svc) {
+        & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Existing service config failed (exit=$LASTEXITCODE)" }
+    }
+    $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    Log "[SERVICE] path=$($serviceInfo.PathName)"
+    Log "[SERVICE] startup=$($serviceInfo.StartMode)"
     Start-Service -Name $serviceName -ErrorAction Stop
     Log '[SERVICE] start requested'
     for ($i=0; $i -lt 10; $i++) {
         Start-Sleep -Seconds 1
         $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-        if ($svc -and $svc.Status -eq 'Running') { Log '[SERVICE] running PASS'; Log '[SERVICE] health PASS (service running)'; return }
+        if ($svc -and $svc.Status -eq 'Running') {
+            $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+            if ($serviceInfo.StartMode -ne 'Auto') { throw "Service startup mode is $($serviceInfo.StartMode), expected Auto" }
+            Log '[SERVICE] running PASS'; Log '[SERVICE] health PASS (service running)'; return
+        }
     }
     throw 'Service health failed: service did not reach Running within 10 seconds'
 }
