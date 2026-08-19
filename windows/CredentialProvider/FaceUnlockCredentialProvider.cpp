@@ -14,7 +14,13 @@ enum FACEUNLOCK_FIELD_ID {
     FID_NUM_FIELDS = 4
 };
 
-static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_Fields[FID_NUM_FIELDS] = {
+struct FieldDef {
+    DWORD dwFieldID;
+    CREDENTIAL_PROVIDER_FIELD_TYPE cpft;
+    PCWSTR pszLabel;
+};
+
+static const FieldDef s_Fields[FID_NUM_FIELDS] = {
     { FID_LARGE_TEXT, CPFT_LARGE_TEXT, L"FaceUnlock" },
     { FID_SMALL_TEXT, CPFT_SMALL_TEXT, L"Unlock with iPhone" },
     { FID_SUBMIT,     CPFT_SUBMIT_BUTTON, L"Face ID" },
@@ -42,8 +48,7 @@ static HRESULT DuplicateString(PCWSTR src, PWSTR* dst) {
 class FaceUnlockCredential final : public ICredentialProviderCredential {
     LONG refs_ = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO usage_ = CPUS_LOGON;
-    ICredentialProviderEvents* events_ = nullptr;
-    UINT_PTR adviseContext_ = 0;
+    ICredentialProviderCredentialEvents* events_ = nullptr;
     WCHAR statusMessage_[256] = L"Phase A: Ready for authentication.";
 
 public:
@@ -72,15 +77,13 @@ public:
     }
 
     // ICredentialProviderCredential
-    IFACEMETHODIMP Advise(ICredentialProviderEvents* pcpEvents, UINT_PTR upAdviseContext) override {
-        events_ = pcpEvents;
-        adviseContext_ = upAdviseContext;
+    IFACEMETHODIMP Advise(ICredentialProviderCredentialEvents* pcpce) override {
+        events_ = pcpce;
         return S_OK;
     }
 
     IFACEMETHODIMP UnAdvise() override {
         events_ = nullptr;
-        adviseContext_ = 0;
         return S_OK;
     }
 
