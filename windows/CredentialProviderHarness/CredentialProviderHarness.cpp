@@ -897,11 +897,12 @@ int wmain(int argc, wchar_t* argv[]) {
     printf("============================================================\n");
     printf("  FaceUnlock Credential Provider Safety Harness (Pure COM)\n");
     printf("============================================================\n");
+    fflush(stdout);
 
     const wchar_t* dllPath = L"FaceUnlockCredentialProvider.dll";
     if (argc > 1) dllPath = argv[1];
 
-    printf("Loading: %ls\n", dllPath);
+    printf("Loading: %ls\n", dllPath); fflush(stdout);
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
@@ -914,29 +915,31 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    printf("DLL loaded successfully.\n");
+    printf("DLL loaded successfully.\n"); fflush(stdout);
 
-    Test_DllGetClassObject();
-    Test_CreateInstance();
-    Test_SetUsageScenario();
-    Test_SetUserArray();
-    Test_FieldDescriptors();
-    Test_GetCredentialAt();
-    Test_AdviseUnAdvise();
-    Test_SetSelectedDeselected();
-    Test_1000Iterations();
-    Test_AsyncDestruction();
-    Test_MultiCallGetSerialization();
-    Test_EventsLifetime();
-    Test_Cancellation();
-    Test_StressAsync100();
-    Test_ExceptionFailSafe();
-    Test_IpcUnavailable();
-    Test_NoCredentialsChangedLoop();
-    Test_CtorDtorBalance();
-    Test_DllCanUnloadNow();
+    Test_DllGetClassObject(); fflush(stdout);
+    Test_CreateInstance(); fflush(stdout);
+    Test_SetUsageScenario(); fflush(stdout);
+    Test_SetUserArray(); fflush(stdout);
+    Test_FieldDescriptors(); fflush(stdout);
+    Test_GetCredentialAt(); fflush(stdout);
+    Test_AdviseUnAdvise(); fflush(stdout);
+    Test_SetSelectedDeselected(); fflush(stdout);
+    Test_1000Iterations(); fflush(stdout);
+    Test_AsyncDestruction(); fflush(stdout);
+    Test_MultiCallGetSerialization(); fflush(stdout);
+    Test_EventsLifetime(); fflush(stdout);
+    Test_Cancellation(); fflush(stdout);
+    Test_StressAsync100(); fflush(stdout);
+    Test_ExceptionFailSafe(); fflush(stdout);
+    Test_IpcUnavailable(); fflush(stdout);
+    Test_NoCredentialsChangedLoop(); fflush(stdout);
+    Test_CtorDtorBalance(); fflush(stdout);
+    Test_DllCanUnloadNow(); fflush(stdout);
 
+    printf("\nFreeing DLL...\n"); fflush(stdout);
     FreeLibrary(g_hDll);
+    printf("Uninitializing COM...\n"); fflush(stdout);
     CoUninitialize();
 
     printf("\n============================================================\n");
@@ -945,6 +948,7 @@ int wmain(int argc, wchar_t* argv[]) {
         printf("  LIFETIME: %ld ctors, %ld dtors\n", g_pfnGetCtorCount(), g_pfnGetDtorCount());
     }
     printf("============================================================\n");
+    fflush(stdout);
 
     return (g_failed == 0) ? 0 : 1;
 }
