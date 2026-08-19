@@ -3,7 +3,9 @@ hosting/config.php
 **/bin/
 **/obj/
 ios/build/
-ios/archive.xcarchive/
+ios/dist/
 ios/FaceUnlock.xcodeproj/
+ios/archive.xcarchive/
+DerivedData/
 windows/CredentialProvider/build/
 .DS_Store
