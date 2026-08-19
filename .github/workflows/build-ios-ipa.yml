@@ -125,3 +125,11 @@ jobs:
             ios/dist/FaceUnlock.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload Build Log Artifact on Failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ios/build/xcodebuild.log
+          if-no-files-found: ignore
