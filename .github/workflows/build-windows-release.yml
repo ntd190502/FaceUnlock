@@ -64,11 +64,11 @@ jobs:
           New-Item -ItemType Directory -Path windows/dist/Portable -Force
           Copy-Item windows/installer/bin/* windows/dist/Portable/
 
-      - name: Compile Inno Setup Installer
-        uses: Minisug/inno-setup-action@v1.2.0
-        with:
-          path: windows/installer/FaceUnlock.iss
-          options: /O+windows/dist
+      - name: Install Inno Setup & Compile Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows/installer/FaceUnlock.iss /Owindows/dist
 
       - name: Generate SHA256 Checksums
         shell: pwsh
