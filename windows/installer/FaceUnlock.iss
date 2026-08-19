@@ -1,6 +1,6 @@
 ; Script generated for Inno Setup 6
 #define MyAppName "FaceUnlock"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "FaceUnlock Team"
 #define MyAppURL "https://github.com/ntd190502/FaceUnlock"
 #define MyAppExeName "FaceUnlock.Agent.exe"
@@ -34,19 +34,34 @@ Source: "bin\FaceUnlock.Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock.Service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockCredentialProvider.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Enable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Disable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName} Agent"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\FaceUnlock Emergency Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Recovery.ps1"""
+Name: "{group}\FaceUnlock - Enable Credential Provider (Advanced)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-CredentialProvider.ps1"""
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
-[Registry]
-; Register Credential Provider in Winlogon
-Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{{64D6E84B-4969-4B59-A11A-58C3D9FA0110}"; ValueType: string; ValueName: ""; ValueData: "FaceUnlock"; Flags: uninsdeletekey
+; ============================================================
+; DISABLED: Automatic Credential Provider registration
+; ============================================================
+; Reason: FaceUnlock Credential Provider had critical bugs that caused
+; Windows lock screen to flicker infinitely and become unusable.
+; Auto-registration is DISABLED until CP_SAFE_FOR_LOGONUI_TEST=YES
+; as confirmed by the standalone CredentialProviderHarness test suite.
+;
+; To manually enable after validation:
+;   Start Menu -> FaceUnlock -> Enable Credential Provider (Advanced)
+;   OR run: Enable-CredentialProvider.ps1 as Administrator
+; ============================================================
+;[Registry]
+;Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{64D6E84B-4969-4B59-A11A-58C3D9FA0110}"; ValueType: string; ValueName: ""; ValueData: "FaceUnlock"; Flags: uninsdeletekey
 
 [Run]
-; Register COM InprocServer32 DLL
-Filename: "regsvr32.exe"; Parameters: "/s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
+; DISABLED: regsvr32 auto-registration — see comment above
+; Filename: "regsvr32.exe"; Parameters: "/s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
+;
 ; Create & start Windows Service using sc.exe
 Filename: "{sys}\sc.exe"; Parameters: "create ""FaceUnlock Service"" binPath= ""{app}\FaceUnlock.Service.exe"" start= auto displayName= ""FaceUnlock Service"""; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "start ""FaceUnlock Service"""; Flags: runhidden
@@ -57,5 +72,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 ; Stop and remove Windows Service
 Filename: "{sys}\sc.exe"; Parameters: "stop ""FaceUnlock Service"""; Flags: runhidden
 Filename: "{sys}\sc.exe"; Parameters: "delete ""FaceUnlock Service"""; Flags: runhidden
-; Unregister COM DLL
+; Unregister COM DLL (safe no-op if not registered)
 Filename: "regsvr32.exe"; Parameters: "/u /s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
+; Also clean up any manually enabled registry keys
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'HKLM:\SOFTWARE\Classes\CLSID\{64D6E84B-4969-4B59-A11A-58C3D9FA0110}' -Recurse -Force -ErrorAction SilentlyContinue"""; Flags: runhidden
