@@ -26,6 +26,14 @@ public sealed class ConfigStore {
         return cfg;
     }
 
+    public PairingState GetPairingState() {
+        var cfg=Load();
+        if(string.IsNullOrWhiteSpace(cfg.DeviceId)) return new(false,"device_id_missing");
+        if(string.IsNullOrWhiteSpace(cfg.DevicePublicKeyPem)) return new(false,"device_public_key_missing");
+        if(string.IsNullOrWhiteSpace(cfg.PcToken)) return new(false,File.Exists(_tokenPath)?"pc_token_unreadable":"pc_token_missing");
+        return new(true,"paired_secure_token");
+    }
+
     public void Save(LocalConfig c) {
         if(!string.IsNullOrWhiteSpace(c.PcToken)) SaveToken(c.PcToken);
         var clone=new LocalConfig { ServerUrl=c.ServerUrl,PcId=c.PcId,PcName=c.PcName,PcToken=null,PairId=c.PairId,
@@ -56,3 +64,4 @@ public sealed class ConfigStore {
         return secret;
     }
 }
+public sealed record PairingState(bool IsPaired,string Reason);

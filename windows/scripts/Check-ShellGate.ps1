@@ -48,9 +48,9 @@ $cfgPath = "$env:ProgramData\FaceUnlock\config.json"
 function Get-PairingState {
     if (-not (Test-Path $cfgPath)) { return @{ Paired=$false; Reason='config_missing' } }
     try { $cfg = Get-Content -Raw $cfgPath | ConvertFrom-Json } catch { return @{ Paired=$false; Reason='config_invalid' } }
-    $id=$cfg.DeviceId; if(-not $id){$id=$cfg.device_id}; $pub=$cfg.DevicePublicKeyPem; if(-not $pub){$pub=$cfg.device_public_key_pem}; $token=$cfg.PcToken; if(-not $token){$token=$cfg.pc_token}
-    if(-not $id){return @{ Paired=$false; Reason='device_id_missing' }}; if(-not $pub){return @{ Paired=$false; Reason='device_public_key_missing' }}; if(-not $token){return @{ Paired=$false; Reason='pc_token_missing' }}
-    return @{ Paired=$true; Reason='paired' }
+    $id=$cfg.DeviceId; if(-not $id){$id=$cfg.device_id}; $pub=$cfg.DevicePublicKeyPem; if(-not $pub){$pub=$cfg.device_public_key_pem}; $token=$cfg.PcToken; if(-not $token){$token=$cfg.pc_token}; $secureToken=Join-Path $env:ProgramData 'FaceUnlock\pctoken.dpapi'
+    if(-not $id){return @{ Paired=$false; Reason='device_id_missing' }}; if(-not $pub){return @{ Paired=$false; Reason='device_public_key_missing' }}; if(-not $token -and -not(Test-Path $secureToken)){return @{ Paired=$false; Reason='pc_token_missing' }}
+    return @{ Paired=$true; Reason=$(if($token){'paired_legacy_token'}else{'paired_secure_token'}) }
 }
 $pairingState=Get-PairingState
 $isPaired = $pairingState.Paired

@@ -27,11 +27,11 @@ function Get-PairingState {
     try { $c = Get-Content -Raw $configPath | ConvertFrom-Json } catch { return [pscustomobject]@{ Paired=$false; Reason='config_invalid' } }
     $deviceId = $c.DeviceId; if (-not $deviceId) { $deviceId = $c.device_id }
     $pub = $c.DevicePublicKeyPem; if (-not $pub) { $pub = $c.device_public_key_pem }
-    $token = $c.PcToken; if (-not $token) { $token = $c.pc_token }
+    $token = $c.PcToken; if (-not $token) { $token = $c.pc_token }; $secureToken = Join-Path $dataDir 'pctoken.dpapi'
     if (-not $deviceId) { return [pscustomobject]@{ Paired=$false; Reason='device_id_missing' } }
     if (-not $pub) { return [pscustomobject]@{ Paired=$false; Reason='device_public_key_missing' } }
-    if (-not $token) { return [pscustomobject]@{ Paired=$false; Reason='pc_token_missing' } }
-    return [pscustomobject]@{ Paired=$true; Reason='paired' }
+    if (-not $token -and -not (Test-Path $secureToken)) { return [pscustomobject]@{ Paired=$false; Reason='pc_token_missing' } }
+    return [pscustomobject]@{ Paired=$true; Reason=$(if($token){'paired_legacy_token'}else{'paired_secure_token'}) }
 }
 function ShellGateEnabled {
     try { return ((Get-ItemProperty -Path $winlogon -Name Shell -ErrorAction SilentlyContinue).Shell -match 'FaceUnlockShell\.exe') }
