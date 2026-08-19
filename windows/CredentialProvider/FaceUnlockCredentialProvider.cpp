@@ -23,6 +23,7 @@
 // Diagnostic lifetime counters (pure COM tracking)
 static std::atomic<LONG> g_credentialCtorCount{ 0 };
 static std::atomic<LONG> g_credentialDtorCount{ 0 };
+static std::atomic<LONG> g_authWorkerCount{ 0 };
 
 extern "C" {
     LONG WINAPI GetCredentialCtorCount() {
@@ -30,6 +31,9 @@ extern "C" {
     }
     LONG WINAPI GetCredentialDtorCount() {
         return g_credentialDtorCount.load(std::memory_order_seq_cst);
+    }
+    LONG WINAPI GetAuthWorkerCount() {
+        return g_authWorkerCount.load(std::memory_order_seq_cst);
     }
 }
 
@@ -548,6 +552,8 @@ public:
                 this->AddRef();
 
                 std::thread([this, reqId, usageStr, userStr]() {
+                    g_authWorkerCount.fetch_add(1, std::memory_order_seq_cst);
+
                     // RAII ReleaseGuard ensures this->Release() is called on EVERY exit path
                     struct ComReleaseGuard {
                         FaceUnlockCredential* p;

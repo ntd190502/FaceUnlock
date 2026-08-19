@@ -185,12 +185,14 @@ typedef HRESULT(STDAPICALLTYPE* PFN_DllGetClassObject)(REFCLSID, REFIID, LPVOID*
 typedef HRESULT(STDAPICALLTYPE* PFN_DllCanUnloadNow)(void);
 typedef LONG(WINAPI* PFN_GetCredentialCtorCount)(void);
 typedef LONG(WINAPI* PFN_GetCredentialDtorCount)(void);
+typedef LONG(WINAPI* PFN_GetAuthWorkerCount)(void);
 
 static HMODULE                   g_hDll                  = nullptr;
 static PFN_DllGetClassObject      g_pfnGetClass           = nullptr;
 static PFN_DllCanUnloadNow        g_pfnCanUnload          = nullptr;
 static PFN_GetCredentialCtorCount g_pfnGetCtorCount       = nullptr;
 static PFN_GetCredentialDtorCount g_pfnGetDtorCount       = nullptr;
+static PFN_GetAuthWorkerCount     g_pfnGetWorkerCount     = nullptr;
 
 static bool LoadDll(const wchar_t* path) {
     g_hDll = LoadLibraryW(path);
@@ -202,6 +204,7 @@ static bool LoadDll(const wchar_t* path) {
     g_pfnCanUnload   = (PFN_DllCanUnloadNow)        GetProcAddress(g_hDll, "DllCanUnloadNow");
     g_pfnGetCtorCount = (PFN_GetCredentialCtorCount)GetProcAddress(g_hDll, "GetCredentialCtorCount");
     g_pfnGetDtorCount = (PFN_GetCredentialDtorCount)GetProcAddress(g_hDll, "GetCredentialDtorCount");
+    g_pfnGetWorkerCount = (PFN_GetAuthWorkerCount)  GetProcAddress(g_hDll, "GetAuthWorkerCount");
 
     if (!g_pfnGetClass || !g_pfnCanUnload) {
         printf("[ERROR] Missing DLL exports\n");
@@ -645,6 +648,249 @@ static void Test_DllCanUnloadNow() {
     Check(SUCCEEDED(hr), "DllCanUnloadNow returns valid HRESULT");
 }
 
+static void Test_MultiCallGetSerialization() {
+    printf("\n[Test 15] Multi-call GetSerialization (re-entry protection)\n");
+    if (!g_pfnGetWorkerCount) {
+        printf("  [WARN] Diagnostic worker counter export not available in DLL\n");
+        return;
+    }
+
+    LONG workersBefore = g_pfnGetWorkerCount();
+
+    ICredentialProvider* pCP = CreateProvider();
+    if (!pCP) { Fail("MultiGetSerialization", "CreateInstance failed"); return; }
+    pCP->SetUsageScenario(CPUS_LOGON, 0);
+
+    ICredentialProviderSetUserArray* pSUA = nullptr;
+    pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
+    if (pSUA) {
+        auto* arr = new MockUserArray();
+        pSUA->SetUserArray(arr);
+        arr->Release();
+        pSUA->Release();
+    }
+
+    ICredentialProviderCredential* pCred = nullptr;
+    pCP->GetCredentialAt(0, &pCred);
+    if (!pCred) { Fail("MultiGetSerialization", "GetCredentialAt failed"); pCP->Release(); return; }
+
+    auto* mockEvt = new MockEvents();
+    pCred->Advise(mockEvt);
+
+    // Call GetSerialization 20 times rapidly while auth is in progress
+    for (int i = 0; i < 20; ++i) {
+        CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
+        PWSTR pszStatus = nullptr;
+        CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
+        HRESULT hr = pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
+        Check(SUCCEEDED(hr), "GetSerialization call in loop succeeded");
+        if (pszStatus) CoTaskMemFree(pszStatus);
+        if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
+    }
+
+    // Give a moment for any workers to spawn
+    Sleep(300);
+
+    LONG workersAfter = g_pfnGetWorkerCount();
+    LONG deltaWorkers = workersAfter - workersBefore;
+    printf("  Workers spawned during 20 GetSerialization calls: %ld\n", deltaWorkers);
+    Check(deltaWorkers == 1, "Exactly ONE worker thread spawned (AUTH_WORKER_COUNT == 1)");
+
+    pCred->UnAdvise();
+    pCred->Release();
+    mockEvt->Release();
+    pCP->Release();
+}
+
+static void Test_EventsLifetime() {
+    printf("\n[Test 16] Events Lifetime (Advise A -> UnAdvise -> Release A -> Advise B)\n");
+    ICredentialProvider* pCP = CreateProvider();
+    if (!pCP) { Fail("EventsLifetime", "CreateInstance failed"); return; }
+    pCP->SetUsageScenario(CPUS_LOGON, 0);
+
+    ICredentialProviderSetUserArray* pSUA = nullptr;
+    pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
+    if (pSUA) {
+        auto* arr = new MockUserArray();
+        pSUA->SetUserArray(arr);
+        arr->Release();
+        pSUA->Release();
+    }
+
+    ICredentialProviderCredential* pCred = nullptr;
+    pCP->GetCredentialAt(0, &pCred);
+    if (!pCred) { Fail("EventsLifetime", "GetCredentialAt failed"); pCP->Release(); return; }
+
+    auto* mockEvtA = new MockEvents();
+    pCred->Advise(mockEvtA);
+
+    CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
+    PWSTR pszStatus = nullptr;
+    CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
+    pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
+    if (pszStatus) CoTaskMemFree(pszStatus);
+    if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
+
+    // Immediate UnAdvise & Release eventsA
+    pCred->UnAdvise();
+    mockEvtA->Release();
+
+    // Now Advise eventsB
+    auto* mockEvtB = new MockEvents();
+    pCred->Advise(mockEvtB);
+
+    // Wait for background worker to complete
+    Sleep(500);
+
+    // Advise/UnAdvise B cleanly
+    pCred->UnAdvise();
+    pCred->Release();
+    mockEvtB->Release();
+    pCP->Release();
+
+    Pass("Events Lifetime: No stale pointer callback / no crash");
+}
+
+static void Test_Cancellation() {
+    printf("\n[Test 17] IPC Cancellation Responsiveness\n");
+    ICredentialProvider* pCP = CreateProvider();
+    if (!pCP) { Fail("Cancellation", "CreateInstance failed"); return; }
+    pCP->SetUsageScenario(CPUS_LOGON, 0);
+
+    ICredentialProviderSetUserArray* pSUA = nullptr;
+    pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
+    if (pSUA) {
+        auto* arr = new MockUserArray();
+        pSUA->SetUserArray(arr);
+        arr->Release();
+        pSUA->Release();
+    }
+
+    ICredentialProviderCredential* pCred = nullptr;
+    pCP->GetCredentialAt(0, &pCred);
+    if (!pCred) { Fail("Cancellation", "GetCredentialAt failed"); pCP->Release(); return; }
+
+    auto* mockEvt = new MockEvents();
+    pCred->Advise(mockEvt);
+
+    CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
+    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
+    PWSTR pszStatus = nullptr;
+    CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
+    pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
+    if (pszStatus) CoTaskMemFree(pszStatus);
+    if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
+
+    // Wait 100ms then cancel via SetDeselected/UnAdvise
+    Sleep(100);
+
+    auto startCancel = std::chrono::steady_clock::now();
+    pCred->SetDeselected();
+    pCred->UnAdvise();
+    pCred->Release();
+    mockEvt->Release();
+    pCP->Release();
+
+    // Check that cancellation and teardown did not hang for 90 seconds (threshold: 3000 ms)
+    auto endCancel = std::chrono::steady_clock::now();
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(endCancel - startCancel).count();
+    printf("  Cancellation completed in %lld ms\n", (long long)elapsedMs);
+    Check(elapsedMs < 3000, "Worker cancellation completed promptly (< 3000 ms, not 90000 ms)");
+}
+
+static void Test_StressAsync100() {
+    printf("\n[Test 18] Async Stress Test (100 iterations of Advise -> GetSerialization -> sleep -> UnAdvise -> Deselect -> Release)\n");
+    bool allOk = true;
+    for (int iter = 0; iter < 100; ++iter) {
+        ICredentialProvider* pCP = CreateProvider();
+        if (!pCP) { allOk = false; break; }
+        pCP->SetUsageScenario(CPUS_LOGON, 0);
+
+        ICredentialProviderSetUserArray* pSUA = nullptr;
+        pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
+        if (pSUA) {
+            auto* arr = new MockUserArray();
+            pSUA->SetUserArray(arr);
+            arr->Release();
+            pSUA->Release();
+        }
+
+        ICredentialProviderCredential* pCred = nullptr;
+        pCP->GetCredentialAt(0, &pCred);
+        if (!pCred) { pCP->Release(); allOk = false; break; }
+
+        auto* mockEvt = new MockEvents();
+        pCred->Advise(mockEvt);
+
+        CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE cpgsr{};
+        CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION cpcs{};
+        PWSTR pszStatus = nullptr;
+        CREDENTIAL_PROVIDER_STATUS_ICON cpsi{};
+        pCred->GetSerialization(&cpgsr, &cpcs, &pszStatus, &cpsi);
+        if (pszStatus) CoTaskMemFree(pszStatus);
+        if (cpcs.rgbSerialization) CoTaskMemFree(cpcs.rgbSerialization);
+
+        // Sleep pseudo-random 0-50 ms
+        Sleep(iter % 50);
+
+        pCred->UnAdvise();
+        pCred->SetDeselected();
+        pCred->Release();
+
+        mockEvt->Release();
+        pCP->Release();
+    }
+    Check(allOk, "Stress test (100 iterations): no crash, no hang");
+}
+
+static void Test_ExceptionFailSafe() {
+    printf("\n[Test 19] Exception / Fail-safe / Null arg validation\n");
+    ICredentialProvider* pCP = CreateProvider();
+    if (!pCP) { Fail("FailSafe", "CreateInstance failed"); return; }
+
+    // Test null/invalid args on Provider
+    Check(pCP->GetCredentialCount(nullptr, nullptr, nullptr) == E_POINTER, "GetCredentialCount(nullptr) -> E_POINTER");
+    Check(pCP->GetFieldDescriptorCount(nullptr) == E_POINTER, "GetFieldDescriptorCount(nullptr) -> E_POINTER");
+    Check(pCP->GetFieldDescriptorAt(0, nullptr) == E_POINTER, "GetFieldDescriptorAt(0, nullptr) -> E_POINTER");
+    Check(pCP->GetCredentialAt(0, nullptr) == E_POINTER, "GetCredentialAt(0, nullptr) -> E_POINTER");
+
+    pCP->SetUsageScenario(CPUS_LOGON, 0);
+    ICredentialProviderSetUserArray* pSUA = nullptr;
+    pCP->QueryInterface(IID_ICredentialProviderSetUserArray, (void**)&pSUA);
+    if (pSUA) {
+        auto* arr = new MockUserArray();
+        pSUA->SetUserArray(arr);
+        arr->Release();
+        pSUA->Release();
+    }
+
+    ICredentialProviderCredential* pCred = nullptr;
+    pCP->GetCredentialAt(0, &pCred);
+    if (pCred) {
+        // Test null/invalid args on Credential
+        Check(pCred->SetSelected(nullptr) == E_POINTER, "SetSelected(nullptr) -> E_POINTER");
+        Check(pCred->GetFieldState(0, nullptr, nullptr) == E_POINTER, "GetFieldState(nullptr) -> E_POINTER");
+        Check(pCred->GetStringValue(0, nullptr) == E_POINTER, "GetStringValue(nullptr) -> E_POINTER");
+        Check(pCred->GetSerialization(nullptr, nullptr, nullptr, nullptr) == E_POINTER, "GetSerialization(nullptr) -> E_POINTER");
+        Check(pCred->ReportResult(0, 0, nullptr, nullptr) == E_POINTER, "ReportResult(nullptr) -> E_POINTER");
+
+        // Invalid field IDs
+        CREDENTIAL_PROVIDER_FIELD_STATE cpfs{};
+        CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis{};
+        Check(pCred->GetFieldState(999, &cpfs, &cpfis) == E_INVALIDARG, "GetFieldState(999) -> E_INVALIDARG");
+
+        PWSTR psz = nullptr;
+        Check(pCred->GetStringValue(999, &psz) == E_INVALIDARG, "GetStringValue(999) -> E_INVALIDARG");
+
+        Check(pCred->SetStringValue(999, L"test") == E_INVALIDARG, "SetStringValue(999) -> E_INVALIDARG");
+
+        pCred->Release();
+    }
+    pCP->Release();
+}
+
 int wmain(int argc, wchar_t* argv[]) {
     printf("============================================================\n");
     printf("  FaceUnlock Credential Provider Safety Harness (Pure COM)\n");
@@ -678,9 +924,14 @@ int wmain(int argc, wchar_t* argv[]) {
     Test_SetSelectedDeselected();
     Test_1000Iterations();
     Test_AsyncDestruction();
-    Test_CtorDtorBalance();
+    Test_MultiCallGetSerialization();
+    Test_EventsLifetime();
+    Test_Cancellation();
+    Test_StressAsync100();
+    Test_ExceptionFailSafe();
     Test_IpcUnavailable();
     Test_NoCredentialsChangedLoop();
+    Test_CtorDtorBalance();
     Test_DllCanUnloadNow();
 
     FreeLibrary(g_hDll);

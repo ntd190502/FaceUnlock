@@ -9,4 +9,5 @@ extern const CLSID CLSID_FaceUnlockProvider;
 extern "C" {
     __declspec(dllexport) LONG WINAPI GetCredentialCtorCount();
     __declspec(dllexport) LONG WINAPI GetCredentialDtorCount();
+    __declspec(dllexport) LONG WINAPI GetAuthWorkerCount();
 }
