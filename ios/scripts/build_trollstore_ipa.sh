@@ -41,19 +41,17 @@ xcodebuild \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \
+    CODE_SIGN_STYLE=Manual \
+    CODE_SIGN_ENTITLEMENTS="" \
     PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID:-io.faceunlock.app}" \
-    build 2>&1 | tee build/xcodebuild.log
-XCODEBUILD_STATUS=${PIPESTATUS[0]:-${?}}
+    build | tee build/xcodebuild.log
+XCODEBUILD_STATUS="${PIPESTATUS[0]}"
 set -e
 
 if [ "$XCODEBUILD_STATUS" -ne 0 ]; then
     echo "======================================"
     echo "XCODEBUILD FAILED with exit code: $XCODEBUILD_STATUS"
     echo "======================================"
-    echo "--- All lines with 'error:' ---"
-    grep -in "error:" build/xcodebuild.log || true
-    echo "--- Last 100 lines of build log ---"
-    tail -n 100 build/xcodebuild.log || true
     exit "$XCODEBUILD_STATUS"
 fi
 
