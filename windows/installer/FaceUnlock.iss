@@ -78,9 +78,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 [UninstallRun]
 ; This runs first and exits nonzero if explorer restore cannot be verified.
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode uninstall -InstallDir ""{app}"""; Flags: runhidden waituntilterminated
-; Stop and remove Windows Service
-Filename: "{sys}\sc.exe"; Parameters: "stop ""FaceUnlock Service"""; Flags: runhidden
-Filename: "{sys}\sc.exe"; Parameters: "delete ""FaceUnlock Service"""; Flags: runhidden
 ; Unregister COM DLL (safe no-op if not registered)
 Filename: "regsvr32.exe"; Parameters: "/u /s ""{app}\FaceUnlockCredentialProvider.dll"""; Flags: runhidden
 ; Also clean up any manually enabled registry keys

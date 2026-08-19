@@ -42,27 +42,51 @@ function RestoreExplorer {
 }
 function EnsureService {
     $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    Log "[SERVICE] exists=$([bool]$svc)"
+    $expectedPath = "`"$InstallDir\FaceUnlock.Service.exe`""
     if (-not $svc) {
-        & "$env:SystemRoot\System32\sc.exe" create $serviceName "binPath= `"$InstallDir\FaceUnlock.Service.exe`"" "start= auto" "displayName= FaceUnlock Service" | Out-Null
+        Log '[SERVICE] create requested'
+        & "$env:SystemRoot\System32\sc.exe" create $serviceName "binPath= $expectedPath" 'start= auto' 'DisplayName= FaceUnlock Service' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Service create failed (exit=$LASTEXITCODE)" }
+        Log '[SERVICE] create PASS'
     } else {
-        & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= `"$InstallDir\FaceUnlock.Service.exe`"" "start= auto" | Out-Null
+        if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop; Log '[SERVICE] stop PASS' }
+        Log '[SERVICE] repair binPath requested'
     }
-    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-    $svc = Get-Service -Name $serviceName -ErrorAction Stop
-    if ($svc.Status -ne 'Running') { throw "Service is not running (state=$($svc.Status))" }
+    & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Service config failed (exit=$LASTEXITCODE)" }
+    Log "[SERVICE] binpath=$expectedPath"
+    Log '[SERVICE] startup=Automatic'
+    Start-Service -Name $serviceName -ErrorAction Stop
+    Log '[SERVICE] start requested'
+    for ($i=0; $i -lt 10; $i++) {
+        Start-Sleep -Seconds 1
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Running') { Log '[SERVICE] running PASS'; Log '[SERVICE] health PASS (service running)'; return }
+    }
+    throw 'Service health failed: service did not reach Running within 10 seconds'
 }
 
 if ($Mode -eq 'uninstall') {
     Log 'uninstall requested: restoring explorer before removing binaries'
     RestoreExplorer
     Log 'uninstall shell restore PASS'
+    $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop }
+        & "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Service delete failed (exit=$LASTEXITCODE)" }
+        Log 'uninstall service delete PASS'
+    } else { Log 'uninstall service missing: continuing safely' }
     exit 0
 }
 
 $wasEnabled = ShellGateEnabled
 $paired = IsPaired
-$upgrade = Test-Path $configPath
-Log "install mode=$(if($upgrade){'upgrade/repair'}else{'fresh'}) paired=$paired shell_enabled_before=$wasEnabled"
+$serviceBefore = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+$metadataBefore = Test-Path $configPath
+$installMode = if ($serviceBefore -and $metadataBefore) { 'upgrade' } elseif ($metadataBefore) { 'repair' } else { 'fresh' }
+Log "install mode=$installMode paired=$paired shell_enabled_before=$wasEnabled"
 
 try {
     if (-not (Test-Path $shellExe) -or -not (Test-Path $recovery) -or -not (Test-Path $enable) -or -not (Test-Path $disable)) {
@@ -80,7 +104,7 @@ try {
     }
     if (PhaseEActive) { throw 'Deprecated Phase E LSA package is active; Shell Gate will not be enabled' }
 
-    if ($wasEnabled -or -not $upgrade) {
+    if ($wasEnabled -or $installMode -eq 'fresh') {
         & $enable -Force -CustomShellPath $shellExe
         if (-not (ShellGateEnabled)) { throw 'Shell Gate registry verification failed' }
         Log "shell gate $(if($wasEnabled){'preserved'}else{'enabled'}) PASS"
