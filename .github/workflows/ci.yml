@@ -27,6 +27,8 @@ jobs:
           dotnet restore windows/FaceUnlock.Core/FaceUnlock.Core.csproj
           dotnet restore windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj
           dotnet restore windows/FaceUnlock.Service/FaceUnlock.Service.csproj
+          dotnet restore windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj
+          dotnet restore windows/FaceUnlock.ShellTests/FaceUnlock.ShellTests.csproj
           dotnet restore windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
           dotnet restore windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj
           dotnet restore windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj
@@ -39,6 +41,12 @@ jobs:
 
       - name: Build FaceUnlock.Service (Release)
         run: dotnet build windows/FaceUnlock.Service/FaceUnlock.Service.csproj --configuration Release --no-restore
+
+      - name: Build FaceUnlock.Shell (Release)
+        run: dotnet build windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj --configuration Release --no-restore
+
+      - name: Run FaceUnlock Shell Gate Safety Harness Tests
+        run: dotnet run --project windows/FaceUnlock.ShellTests/FaceUnlock.ShellTests.csproj --configuration Release --no-restore
 
       - name: Run BLE framing self-test
         run: dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore

@@ -45,14 +45,40 @@ If FaceUnlock is already active, it polls `/v1/unlock/pending`. A new device-bou
 
 See `docs/PROTOCOL.md` for the framing format.
 
+## FaceUnlock Architecture (Phase F: Post-Logon Shell Gate)
+
+FaceUnlock implements a **Post-Logon Windows Shell Gate** (`FaceUnlockShell.exe`):
+- Runs before `explorer.exe` (Windows desktop is not released until biometric authorization).
+- Communicates strictly via local IPC with `FaceUnlock.Service.exe`.
+- Automatically initiates **exactly one** Face ID authorization request upon session start.
+- Single-use authorization grant is bound to:
+  - Unique `request_id`
+  - Current Windows User SID
+  - Process Windows Session ID
+  - Machine PC ID & Paired Device ID
+- When Face ID is approved and the single-use grant is consumed, `FaceUnlockShell.exe` safely launches `%WINDIR%\explorer.exe` and exits cleanly.
+
+### Security Boundary & Architecture Notice
+- **Not a Windows Hello / LSA Passwordless Replacement**: This is a **Post-Logon Shell Gate**, not an LSA security boundary. The Windows session is established before the Shell Gate executes.
+- **Phase E Deprecation**: Phase E (custom LSA Authentication Package `FaceUnlockAuthPackage.dll`) is **deprecated/experimental** due to modern Windows LSA Protection blocking unsigned third-party Authentication Packages. Phase F Shell Gate is the recommended architecture.
+- Built-in Windows PIN and password providers remain fully functional as safe recovery paths.
+
 ## Fast start
 
 1. Deploy `hosting/` and import `hosting/schema.sql`.
 2. Copy `hosting/config.example.php` to `hosting/config.php`; configure database and Telegram credentials.
-3. Build Windows managed projects with `windows/scripts/build.ps1` or the `.NET 8` commands in `docs/BUILD_WINDOWS.md`.
+3. Build Windows managed projects with `windows/scripts/build.ps1` or `.NET 8` commands.
 4. Generate the iOS project with XcodeGen and build on a physical iPhone.
-5. Pair by scanning the Windows QR.
-6. Test foreground online approval, Telegram/deep-link approval, and offline BLE/QR fallback.
+5. Pair by scanning the Windows QR from `FaceUnlock.Agent.exe`.
+6. Test Shell Gate safely:
+   ```powershell
+   FaceUnlockShell.exe --test
+   ```
+7. Check diagnostics and configuration:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File windows/scripts/Check-ShellGate.ps1
+   powershell -ExecutionPolicy Bypass -File windows/scripts/Enable-ShellGate.ps1 -DryRun
+   ```
 
 ## Security highlights
 
@@ -60,14 +86,8 @@ See `docs/PROTOCOL.md` for the framing format.
 - Device and PC bearer tokens are not persisted in plaintext application config.
 - iPhone pins the PC identity/public key obtained from the pairing QR.
 - Online and offline approvals are signed ECDSA P-256/SHA-256 using ASN.1 DER signatures.
-- Sessions/challenges expire and are bound to the paired device.
+- Sessions/challenges expire and are bound to the paired device, Windows user SID, and Session ID.
 - Revoked devices cannot use device-authenticated server routes.
 - BLE transport itself is not trusted; cryptographic signatures remain authoritative.
-
-## Important Windows limitation
-
-The current repository completes **FaceUnlock biometric approval**, not an undocumented Windows authentication bypass. A normal third-party Credential Provider cannot simply tell Winlogon/LSA to unlock because a phone signed a challenge. `windows/CredentialProvider/` remains a scaffold and is intentionally outside the phase 1–6 hardening work.
-
-Keep built-in Windows PIN/password providers enabled as the recovery path.
-
-See `docs/LIMITATIONS.md`.
+- Fail-closed design: Service unavailability, rejection, timeout, or missing grants never launch Explorer.
+- Built-in emergency recovery script (`FaceUnlock-Shell-Recovery.ps1`) restores `explorer.exe` cleanly.

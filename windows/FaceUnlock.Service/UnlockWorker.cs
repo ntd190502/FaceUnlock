@@ -54,6 +54,9 @@ public sealed class UnlockWorker : BackgroundService
         public string? UserSid { get; set; }
         public string? QualifiedUsername { get; set; }
         public string? DeviceId { get; set; }
+        public int? SessionId { get; set; }
+        public string? ClientType { get; set; }
+        public string? PcId { get; set; }
     }
 
     // In-memory grant cache: requestId -> AuthGrant
@@ -286,28 +289,28 @@ public sealed class UnlockWorker : BackgroundService
                 // Handle grant lifecycle commands
                 if (request.command == "reserve_grant")
                 {
-                    var reserveResp = ReserveGrant(request.request_id);
+                    var reserveResp = ReserveGrant(request);
                     opName = "WRITE_RESERVE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(reserveResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-                    AppendServiceLog($"[ACK WRITTEN] reserve_grant request_id={request.request_id}");
+                    AppendServiceLog($"[ACK WRITTEN] reserve_grant request_id={request.request_id} status={reserveResp.status}");
                     return;
                 }
 
                 if (request.command == "release_grant")
                 {
-                    var releaseResp = ReleaseGrant(request.request_id);
+                    var releaseResp = ReleaseGrant(request);
                     opName = "WRITE_RELEASE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(releaseResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-                    AppendServiceLog($"[ACK WRITTEN] release_grant request_id={request.request_id}");
+                    AppendServiceLog($"[ACK WRITTEN] release_grant request_id={request.request_id} status={releaseResp.status}");
                     return;
                 }
 
                 if (request.command == "consume_grant")
                 {
-                    var consumeResp = ConsumeGrant(request.request_id);
+                    var consumeResp = ConsumeGrant(request);
                     opName = "WRITE_CONSUME";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-                    AppendServiceLog($"[ACK WRITTEN] consume_grant request_id={request.request_id}");
+                    AppendServiceLog($"[ACK WRITTEN] consume_grant request_id={request.request_id} status={consumeResp.status}");
                     return;
                 }
 
@@ -322,7 +325,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (request.command == "grant_status")
                 {
-                    var statusResp = GetGrantStatus(request.request_id);
+                    var statusResp = GetGrantStatus(request);
                     opName = "WRITE_GRANT_STATUS";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(statusResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     return;
@@ -401,8 +404,9 @@ public sealed class UnlockWorker : BackgroundService
         return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Request cancelled or not active");
     }
 
-    private LocalAuthResponse ReserveGrant(string requestId)
+    private LocalAuthResponse ReserveGrant(LocalAuthRequest req)
     {
+        var requestId = req.request_id;
         lock (_activeGrants)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -428,14 +432,43 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
             }
 
+            // SID binding verification
+            if (!string.IsNullOrWhiteSpace(req.user_sid) && !string.IsNullOrWhiteSpace(grant.UserSid))
+            {
+                if (!string.Equals(req.user_sid, grant.UserSid, StringComparison.OrdinalIgnoreCase))
+                {
+                    AppendServiceLog($"[RESERVE_GRANT SID_MISMATCH] request_id={requestId} req_sid={req.user_sid} grant_sid={grant.UserSid}");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "User SID mismatch");
+                }
+            }
+
+            // Session ID binding verification
+            if (req.session_id.HasValue && grant.SessionId.HasValue)
+            {
+                if (req.session_id.Value != grant.SessionId.Value)
+                {
+                    AppendServiceLog($"[RESERVE_GRANT SESSION_MISMATCH] request_id={requestId} req_session={req.session_id.Value} grant_session={grant.SessionId.Value}");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Windows Session ID mismatch");
+                }
+            }
+
             grant.State = GrantState.Reserved;
-            AppendServiceLog($"[RESERVE_GRANT SUCCESS] request_id={requestId}");
-            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Reserved, "grant_reserved", grant.ExpiresAt);
+            if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendServiceLog($"[SHELL GRANT RESERVED] request_id={requestId} user_sid={grant.UserSid ?? req.user_sid ?? "(none)"} session_id={grant.SessionId ?? req.session_id ?? -1}");
+            }
+            else
+            {
+                AppendServiceLog($"[RESERVE_GRANT SUCCESS] request_id={requestId}");
+            }
+
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Reserved, "grant_reserved", grant.ExpiresAt, null, null, grant.UserSid, grant.SessionId);
         }
     }
 
-    private LocalAuthResponse ReleaseGrant(string requestId)
+    private LocalAuthResponse ReleaseGrant(LocalAuthRequest req)
     {
+        var requestId = req.request_id;
         lock (_activeGrants)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -464,12 +497,13 @@ public sealed class UnlockWorker : BackgroundService
             // Return grant to Approved state so user can retry password within remaining TTL
             grant.State = GrantState.Approved;
             AppendServiceLog($"[RELEASE_GRANT SUCCESS] request_id={requestId} returned to Approved state, expires_in={grant.ExpiresAt - now}s");
-            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_released", grant.ExpiresAt);
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_released", grant.ExpiresAt, null, null, grant.UserSid, grant.SessionId);
         }
     }
 
-    private LocalAuthResponse ConsumeGrant(string requestId)
+    private LocalAuthResponse ConsumeGrant(LocalAuthRequest req)
     {
+        var requestId = req.request_id;
         lock (_activeGrants)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -495,16 +529,47 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired (>30s)");
             }
 
+            // SID binding verification
+            if (!string.IsNullOrWhiteSpace(req.user_sid) && !string.IsNullOrWhiteSpace(grant.UserSid))
+            {
+                if (!string.Equals(req.user_sid, grant.UserSid, StringComparison.OrdinalIgnoreCase))
+                {
+                    AppendServiceLog($"[CONSUME_GRANT SID_MISMATCH] request_id={requestId} req_sid={req.user_sid} grant_sid={grant.UserSid}");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "User SID mismatch");
+                }
+            }
+
+            // Session ID binding verification
+            if (req.session_id.HasValue && grant.SessionId.HasValue)
+            {
+                if (req.session_id.Value != grant.SessionId.Value)
+                {
+                    AppendServiceLog($"[CONSUME_GRANT SESSION_MISMATCH] request_id={requestId} req_session={req.session_id.Value} grant_session={grant.SessionId.Value}");
+                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Windows Session ID mismatch");
+                }
+            }
+
             // Grant is valid: consume immediately and remove
             grant.State = GrantState.Consumed;
             _activeGrants.Remove(requestId);
-            AppendServiceLog($"[CONSUME_GRANT SUCCESS] request_id={requestId}");
-            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Consumed, "grant_consumed", grant.ExpiresAt);
+
+            if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendServiceLog($"[SHELL GRANT CONSUMED] request_id={requestId} user_sid={grant.UserSid ?? req.user_sid ?? "(none)"} session_id={grant.SessionId ?? req.session_id ?? -1}");
+                AppendServiceLog($"[SHELL DESKTOP RELEASED] request_id={requestId}");
+            }
+            else
+            {
+                AppendServiceLog($"[CONSUME_GRANT SUCCESS] request_id={requestId}");
+            }
+
+            return new LocalAuthResponse(1, requestId, LocalAuthStatus.Consumed, "grant_consumed", grant.ExpiresAt, null, null, grant.UserSid, grant.SessionId);
         }
     }
 
-    private LocalAuthResponse GetGrantStatus(string requestId)
+    private LocalAuthResponse GetGrantStatus(LocalAuthRequest req)
     {
+        var requestId = req.request_id;
         lock (_activeGrants)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -534,7 +599,7 @@ public sealed class UnlockWorker : BackgroundService
                 _ => LocalAuthStatus.Error
             };
 
-            return new LocalAuthResponse(1, requestId, statusStr, grant.LastMessage ?? "Grant active", grant.ExpiresAt);
+            return new LocalAuthResponse(1, requestId, statusStr, grant.LastMessage ?? "Grant active", grant.ExpiresAt, null, null, grant.UserSid, grant.SessionId);
         }
     }
 
@@ -547,7 +612,14 @@ public sealed class UnlockWorker : BackgroundService
     private LocalAuthResponse StartAuthRequest(LocalAuthRequest req, CancellationToken stoppingToken)
     {
         var requestId = req.request_id;
-        AppendServiceLog($"[REQUEST START] request_id={requestId} usage={req.usage} user_sid={req.user_sid ?? "(none)"} qualified_username={req.qualified_username ?? req.username ?? "(none)"}");
+        if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
+        {
+            AppendServiceLog($"[SHELL AUTH START] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1}");
+        }
+        else
+        {
+            AppendServiceLog($"[REQUEST START] request_id={requestId} usage={req.usage} user_sid={req.user_sid ?? "(none)"} qualified_username={req.qualified_username ?? req.username ?? "(none)"}");
+        }
 
         // Check local config first
         var cfg = _configStore.Load();
@@ -562,7 +634,11 @@ public sealed class UnlockWorker : BackgroundService
                     ApprovedAt = DateTimeOffset.UtcNow,
                     ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(30).ToUnixTimeSeconds(),
                     State = GrantState.NotPaired,
-                    LastMessage = "FaceUnlock is not paired on this PC"
+                    LastMessage = "FaceUnlock is not paired on this PC",
+                    UserSid = req.user_sid,
+                    SessionId = req.session_id,
+                    ClientType = req.client_type,
+                    PcId = req.pc_id
                 };
             }
             return new LocalAuthResponse(1, requestId, LocalAuthStatus.NotPaired, "FaceUnlock is not paired on this PC");
@@ -596,7 +672,12 @@ public sealed class UnlockWorker : BackgroundService
                     ApprovedAt = DateTimeOffset.UtcNow,
                     ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(90).ToUnixTimeSeconds(),
                     State = GrantState.Pending,
-                    LastMessage = "Waiting for iPhone Face ID..."
+                    LastMessage = "Waiting for iPhone Face ID...",
+                    UserSid = req.user_sid,
+                    QualifiedUsername = req.qualified_username ?? req.username,
+                    SessionId = req.session_id,
+                    ClientType = req.client_type,
+                    PcId = req.pc_id
                 };
             }
 
@@ -626,8 +707,15 @@ public sealed class UnlockWorker : BackgroundService
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId);
-                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                    if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
+                    {
+                        AppendServiceLog($"[SHELL AUTH APPROVED] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1} transport=Online duration={duration:F2}s");
+                    }
+                    else
+                    {
+                        AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    }
                     return;
                 }
                 else if (onlineResp.Status is LocalAuthStatus.Rejected or LocalAuthStatus.Timeout)
@@ -661,8 +749,15 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
-                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId);
-                    AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                    if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
+                    {
+                        AppendServiceLog($"[SHELL AUTH APPROVED] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1} transport=BLE duration={duration:F2}s");
+                    }
+                    else
+                    {
+                        AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=BLE duration={duration:F2}s verify=PASS grant_ttl=30s");
+                    }
                     return;
                 }
                 else
@@ -951,7 +1046,7 @@ public sealed class UnlockWorker : BackgroundService
         }
     }
 
-    private long RecordGrant(string requestId, string? userSid = null, string? qualifiedUser = null, string? deviceId = null)
+    private long RecordGrant(string requestId, string? userSid = null, string? qualifiedUser = null, string? deviceId = null, int? sessionId = null, string? clientType = null, string? pcId = null)
     {
         lock (_activeGrants)
         {
@@ -969,14 +1064,17 @@ public sealed class UnlockWorker : BackgroundService
                 State = GrantState.Approved,
                 UserSid = userSid,
                 QualifiedUsername = qualifiedUser,
-                DeviceId = deviceId
+                DeviceId = deviceId,
+                SessionId = sessionId,
+                ClientType = clientType,
+                PcId = pcId
             };
 
             return expiresAt;
         }
     }
 
-    public void InjectApprovedGrantForTesting(string requestId, string userSid, string qualifiedUser, string deviceId, long expiresAtSec)
+    public void InjectApprovedGrantForTesting(string requestId, string userSid, string qualifiedUser, string deviceId, long expiresAtSec, int? sessionId = null, string? clientType = null)
     {
         lock (_activeGrants)
         {
@@ -988,7 +1086,9 @@ public sealed class UnlockWorker : BackgroundService
                 State = GrantState.Approved,
                 UserSid = userSid,
                 QualifiedUsername = qualifiedUser,
-                DeviceId = deviceId
+                DeviceId = deviceId,
+                SessionId = sessionId,
+                ClientType = clientType
             };
         }
     }

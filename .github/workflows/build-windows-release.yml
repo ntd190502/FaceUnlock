@@ -39,6 +39,17 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o windows/dist/publish-service
 
+      - name: Publish FaceUnlock.Shell x64
+        shell: pwsh
+        run: |
+          dotnet publish windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o windows/dist/publish-shell
+
       - name: Build FaceUnlockCredentialProvider.dll x64
         shell: pwsh
         run: |
@@ -57,10 +68,16 @@ jobs:
           New-Item -ItemType Directory -Path windows/installer/bin -Force
           Copy-Item windows/dist/publish-agent/FaceUnlock.Agent.exe windows/installer/bin/
           Copy-Item windows/dist/publish-service/FaceUnlock.Service.exe windows/installer/bin/
+          Copy-Item windows/dist/publish-shell/FaceUnlockShell.exe windows/installer/bin/
           Copy-Item windows/dist/publish-agent/FaceUnlock.Core.dll windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll windows/installer/bin/
           Copy-Item windows/FaceUnlock.AuthPackage/build/Release/FaceUnlockAuthPackage.dll windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/FaceUnlock-Shell-Recovery.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/Enable-ShellGate.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/Disable-ShellGate.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/Check-ShellGate.ps1 windows/installer/bin/
+          Copy-Item windows/scripts/Cleanup-PhaseE.ps1 windows/installer/bin/
+          Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/Enable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/CredentialProvider/Disable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/scripts/Enable-AuthPackage.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue

@@ -11,7 +11,7 @@ public record RevokeDeviceResponse(bool ok, bool revoked, string device_id);
 public record OfflineUnlockPayload(string type, string session_id, string pc_id, string pc_name, string challenge, long expires_at, string pc_signature);
 public record OfflineBleResponse(string ok, string? session_id, string? signature, string? error);
 
-// Local IPC models for CredentialProvider <-> FaceUnlock.Service
+// Local IPC models for CredentialProvider / Shell <-> FaceUnlock.Service
 public sealed record LocalAuthRequest(
     int version,
     string command,
@@ -20,7 +20,9 @@ public sealed record LocalAuthRequest(
     string? username = null,
     string? user_sid = null,
     string? qualified_username = null,
-    int? session_id = null
+    int? session_id = null,
+    string? client_type = null,
+    string? pc_id = null
 );
 
 public sealed record LocalAuthResponse(
@@ -30,7 +32,9 @@ public sealed record LocalAuthResponse(
     string? message = null,
     long? expires_at = null,
     string? service_version = null,
-    string? ticket = null
+    string? ticket = null,
+    string? user_sid = null,
+    int? session_id = null
 );
 
 public static class LocalAuthStatus

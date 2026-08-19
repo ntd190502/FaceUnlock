@@ -32,8 +32,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "bin\FaceUnlock.Agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock.Service.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\FaceUnlockShell.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockCredentialProvider.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlockAuthPackage.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\FaceUnlock-Shell-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Enable-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Disable-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Check-ShellGate.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bin\Cleanup-PhaseE.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\FaceUnlock-Recovery.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Enable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\Disable-CredentialProvider.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -43,9 +49,13 @@ Source: "bin\Check-AuthPackage.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName} Agent"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\FaceUnlock Emergency Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Recovery.ps1"""
-Name: "{group}\FaceUnlock - Enable Credential Provider (Advanced)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-CredentialProvider.ps1"""
-Name: "{group}\FaceUnlock - Enable Auth Package (Passwordless)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-AuthPackage.ps1"""
+Name: "{group}\{#MyAppName} Shell Gate (Test Mode)"; Filename: "{app}\FaceUnlockShell.exe"; Parameters: "--test"
+Name: "{group}\FaceUnlock - Check Shell Gate"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Check-ShellGate.ps1"""
+Name: "{group}\FaceUnlock - Enable Shell Gate (Manual)"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Enable-ShellGate.ps1"""
+Name: "{group}\FaceUnlock - Disable Shell Gate"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Disable-ShellGate.ps1"""
+Name: "{group}\FaceUnlock Shell Emergency Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Shell-Recovery.ps1"""
+Name: "{group}\FaceUnlock - Cleanup Phase E AuthPackage"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Cleanup-PhaseE.ps1"""
+Name: "{group}\FaceUnlock Legacy Recovery"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\FaceUnlock-Recovery.ps1"""
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 ; ============================================================
