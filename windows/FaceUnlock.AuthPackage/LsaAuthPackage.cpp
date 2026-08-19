@@ -7,14 +7,11 @@
 #include <ntstatus.h>
 #include <security.h>
 #include <ntsecapi.h>
+#include <ntsecpkg.h>
 #include <sddl.h>
 #include <strsafe.h>
 #include "FaceUnlockAuthCommon.h"
 #include "AuthPackageCore.h"
-
-#ifndef RPC_C_AUTHN_NONE
-#define RPC_C_AUTHN_NONE 0
-#endif
 
 // Global LSA dispatch table and package ID
 static LSA_DISPATCH_TABLE g_LsaDispatchTable;
@@ -26,7 +23,7 @@ static void LogLsa(const char* msg) {
 }
 
 // -------------------------------------------------------------------------
-// LsaApInitializePackage (LsaApInitializePackage)
+// LsaApInitializePackage
 // -------------------------------------------------------------------------
 extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApInitializePackage(
     ULONG_PTR PackageId,
@@ -64,18 +61,6 @@ extern "C" __declspec(dllexport) NTSTATUS NTAPI LsaApInitializePackage(
 
     FaceUnlockAuth::AuthPackageCore::LoadMachineSecretFromDpapi(g_MachineSecret);
     LogLsa("[FaceUnlockAuthPackage] LsaApInitializePackage completed\n");
-    return STATUS_SUCCESS;
-}
-
-// -------------------------------------------------------------------------
-// SpAcceptCredentials
-// -------------------------------------------------------------------------
-static NTSTATUS NTAPI SpAcceptCredentials(
-    SECURITY_LOGON_TYPE LogonType,
-    PUNICODE_STRING AccountName,
-    PSECPKG_PRIMARY_CRED PrimaryCredentials,
-    PSECPKG_SUPPLEMENTAL_CRED SupplementalCredentials
-) {
     return STATUS_SUCCESS;
 }
 
