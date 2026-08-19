@@ -76,3 +76,24 @@ catch (InvalidOperationException)
 Require(oversizeRejected, "Oversized message was accepted.");
 
 Console.WriteLine($"BleFrameCodec C# self-test PASS: {frames.Count} frames");
+
+// Cross-platform vector tests for Canonical formatting and RFC3279 DER ECDSA verification
+var testSessionId = "u4xh-GumauT524IfxlALB6zR";
+var testChallenge = "test-challenge-1234567890";
+var testPcId = "pc-12345";
+long testExpiresAt = 1771234567;
+var expectedCanonical = "faceunlock-v1|u4xh-GumauT524IfxlALB6zR|test-challenge-1234567890|pc-12345|1771234567";
+var actualCanonical = Protocol.Canonical(testSessionId, testChallenge, testPcId, testExpiresAt);
+Require(actualCanonical == expectedCanonical, "Canonical string mismatch.");
+
+// Test RFC3279 DER ECDSA round-trip and verification
+using (var ecdsa = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256))
+{
+    var pubPem = ecdsa.ExportSubjectPublicKeyInfoPem();
+    var sigDer = ecdsa.SignData(System.Text.Encoding.UTF8.GetBytes(actualCanonical), System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.DSASignatureFormat.Rfc3279DerSequence);
+    var sigB64 = Convert.ToBase64String(sigDer);
+    Require(KeyStore.VerifyPem(pubPem, actualCanonical, sigB64), "DER ECDSA verification failed on valid signature.");
+    Require(!KeyStore.VerifyPem(pubPem, actualCanonical + "tampered", sigB64), "Tampered message was accepted.");
+}
+
+Console.WriteLine("Crypto & Canonical cross-platform self-test PASS.");

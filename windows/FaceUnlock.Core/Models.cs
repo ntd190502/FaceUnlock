@@ -6,7 +6,7 @@ public record PairedDevice(string id, string name, string public_key_pem);
 public record PairStatusResponse(bool ok, bool paired, PairedDevice? device);
 public record UnlockRequest(string? device_id = null);
 public record UnlockRequestResponse(bool ok, string session_id, string challenge, long expires_at, bool push_sent, string? push_error, string? device_id = null);
-public record UnlockStatusResponse(bool ok, string session_id, string status, string challenge, long expires_at, string? signature, string device_public_key_pem);
+public record UnlockStatusResponse(bool ok, string session_id, string status, string challenge, long expires_at, string? signature, string device_public_key_pem, string? device_id = null);
 public record RevokeDeviceResponse(bool ok, bool revoked, string device_id);
 public record OfflineUnlockPayload(string type, string session_id, string pc_id, string pc_name, string challenge, long expires_at, string pc_signature);
 public record OfflineBleResponse(string ok, string? session_id, string? signature, string? error);

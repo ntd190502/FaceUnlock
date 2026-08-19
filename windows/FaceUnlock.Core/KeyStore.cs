@@ -27,9 +27,38 @@ public sealed class KeyStore
         EnsurePublicKeyPem(); var enc=File.ReadAllBytes(_privatePath); var raw=ProtectedData.Unprotect(enc, Encoding.UTF8.GetBytes("FaceUnlock-PC-Key-v1"), DataProtectionScope.LocalMachine);
         var e=ECDsa.Create(); e.ImportPkcs8PrivateKey(raw, out _); CryptographicOperations.ZeroMemory(raw); return e;
     }
-    public string SignBase64(string message) { using var e=LoadPrivate(); return Convert.ToBase64String(e.SignData(Encoding.UTF8.GetBytes(message), HashAlgorithmName.SHA256)); }
+    public string SignBase64(string message)
+    {
+        using var e = LoadPrivate();
+        return Convert.ToBase64String(e.SignData(Encoding.UTF8.GetBytes(message), HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence));
+    }
+
+    public static string ComputeFingerprint(string pem)
+    {
+        using var sha = SHA256.Create();
+        var clean = pem.Replace("-----BEGIN PUBLIC KEY-----", "")
+                       .Replace("-----END PUBLIC KEY-----", "")
+                       .Replace("\r", "")
+                       .Replace("\n", "")
+                       .Trim();
+        var bytes = Convert.FromBase64String(clean);
+        var hash = sha.ComputeHash(bytes);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
     public static bool VerifyPem(string pem, string message, string signatureB64)
     {
-        using var e=ECDsa.Create(); e.ImportFromPem(pem); return e.VerifyData(Encoding.UTF8.GetBytes(message), Convert.FromBase64String(signatureB64), HashAlgorithmName.SHA256);
+        try
+        {
+            using var e = ECDsa.Create();
+            e.ImportFromPem(pem);
+            var msgBytes = Encoding.UTF8.GetBytes(message);
+            var sigBytes = Convert.FromBase64String(signatureB64);
+            return e.VerifyData(msgBytes, sigBytes, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

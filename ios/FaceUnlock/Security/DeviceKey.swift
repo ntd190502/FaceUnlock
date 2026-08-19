@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CommonCrypto
 
 final class DeviceKey {
     static let shared = DeviceKey()
@@ -53,6 +54,21 @@ final class DeviceKey {
         let spkiPrefix = Data([0x30,0x59,0x30,0x13,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07,0x03,0x42,0x00])
         let b64 = (spkiPrefix + data).base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
         return "-----BEGIN PUBLIC KEY-----\n\(b64)\n-----END PUBLIC KEY-----\n"
+    }
+
+    func publicKeyFingerprint() throws -> String {
+        let pem = try publicKeyPEM()
+        let clean = pem.replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = Data(base64Encoded: clean) else { return "" }
+        var digest = [UInt8](repeating: 0, count: 32)
+        _ = data.withUnsafeBytes { buffer in
+            CC_SHA256(buffer.baseAddress, CC_LONG(buffer.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     func sign(_ data: Data) throws -> Data {

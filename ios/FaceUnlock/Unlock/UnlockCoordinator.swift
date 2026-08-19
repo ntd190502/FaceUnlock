@@ -50,7 +50,23 @@ final class UnlockCoordinator: ObservableObject {
                 pcID: s.pc_id,
                 expiresAt: s.expires_at
             )
-            let sig = try DeviceKey.shared.sign(Data(canonical.utf8))
+            let canonicalData = Data(canonical.utf8)
+            let sig = try DeviceKey.shared.sign(canonicalData)
+            let sigB64 = sig.base64EncodedString()
+            let fp = (try? DeviceKey.shared.publicKeyFingerprint()) ?? "unknown"
+            let canonicalHex = canonicalData.map { String(format: "%02x", $0) }.joined()
+
+            print("""
+            IOS SIGN:
+            session_id=\(s.session_id)
+            challenge=\(s.challenge)
+            pc_id=\(s.pc_id)
+            expires_at=\(s.expires_at)
+            canonical UTF8=\(canonical)
+            canonical UTF8 hex=\(canonicalHex)
+            signature DER base64=\(sigB64)
+            device public key fingerprint=\(fp)
+            """)
 
             _ = try await APIClient.shared.approve(sessionID, signature: sig)
             lastMessage = "Approved \(s.pc_name)"
