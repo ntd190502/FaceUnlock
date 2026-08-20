@@ -7,262 +7,170 @@ final class UnlockCoordinator: ObservableObject {
     @Published var pendingOnlineSessionID: String?
     @Published var lastMessage = "Ready"
     @Published var isBusy = false
+    @Published var configRevision = 0
 
     private var offlineApprovals: [String: Data] = [:]
     private let biometricApprovalCache = LogicalBiometricApprovalCache()
+    private var queuedOnlineSessionIDs: [String] = []
+    private var pollingTask: Task<Void, Never>?
+    private var foregroundStartedAt = Date()
 
-    private init() {
-        _ = BLEPeripheralManager.shared
-    }
+    private init() { _ = BLEPeripheralManager.shared }
 
     func handleDeepLink(_ url: URL) {
-        guard url.scheme == "faceunlock",
-              url.host == "session",
-              let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                .queryItems?
-                .first(where: { $0.name == "id" })?
-                .value,
-              !id.isEmpty else {
-            lastMessage = "Invalid FaceUnlock link"
-            return
-        }
+        guard url.scheme == "faceunlock", url.host == "session",
+              let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "id" })?.value,
+              !id.isEmpty else { lastMessage = "Invalid FaceUnlock link"; return }
+        enqueueOnlineSession(id)
+        processNextOnlineSessionIfPossible()
+    }
 
-        pendingOnlineSessionID = id
+    private func enqueueOnlineSession(_ id: String) {
+        if pendingOnlineSessionID == id || queuedOnlineSessionIDs.contains(id) { return }
+        queuedOnlineSessionIDs.append(id)
+        if pendingOnlineSessionID == nil { pendingOnlineSessionID = id }
+    }
 
-        // Telegram -> HTTPS landing page -> faceunlock://session?id=...
-        // As soon as the app opens, ask for Face ID.
+    private func processNextOnlineSessionIfPossible() {
         guard !isBusy else { return }
-        Task { @MainActor in
-            await approveOnline(sessionID: id)
-        }
+        if pendingOnlineSessionID == nil, let next = queuedOnlineSessionIDs.first { pendingOnlineSessionID = next }
+        guard let id = pendingOnlineSessionID else { return }
+        queuedOnlineSessionIDs.removeAll { $0 == id }
+        Task { @MainActor in await approveOnline(sessionID: id) }
     }
 
     func approveOnline(sessionID: String) async {
+        guard !isBusy else { enqueueOnlineSession(sessionID); return }
         isBusy = true
-        defer { isBusy = false }
-
+        defer {
+            isBusy = false
+            if pendingOnlineSessionID == sessionID { pendingOnlineSessionID = nil }
+            processNextOnlineSessionIfPossible()
+        }
         do {
             let s = try await APIClient.shared.fetchSession(sessionID)
-            try await authenticateOnce(
-                logicalIDs: [s.session_id],
-                pcID: s.pc_id,
-                expiresAt: s.expires_at,
-                reason: "Unlock \(s.pc_name)"
-            )
-
-            let canonical = Self.canonical(
-                sessionID: s.session_id,
-                challenge: s.challenge,
-                pcID: s.pc_id,
-                expiresAt: s.expires_at
-            )
+            guard s.status == "PENDING" else { lastMessage = "Request is no longer pending"; return }
+            try await authenticateOnce(logicalIDs: [s.session_id], pcID: s.pc_id, expiresAt: s.expires_at, reason: "Unlock \(s.pc_name)")
+            let canonical = Self.canonical(sessionID: s.session_id, challenge: s.challenge, pcID: s.pc_id, expiresAt: s.expires_at)
             let canonicalData = Data(canonical.utf8)
             let sig = try DeviceKey.shared.sign(canonicalData)
+            #if DEBUG
             let sigB64 = sig.base64EncodedString()
             let fp = (try? DeviceKey.shared.publicKeyFingerprint()) ?? "unknown"
             let canonicalHex = canonicalData.map { String(format: "%02x", $0) }.joined()
-
-            print("""
-            IOS SIGN:
-            session_id=\(s.session_id)
-            challenge=\(s.challenge)
-            pc_id=\(s.pc_id)
-            expires_at=\(s.expires_at)
-            canonical UTF8=\(canonical)
-            canonical UTF8 hex=\(canonicalHex)
-            signature DER base64=\(sigB64)
-            device public key fingerprint=\(fp)
-            """)
-
+            print("IOS SIGN session=\(s.session_id) canonicalHex=\(canonicalHex) signature=\(sigB64) key=\(fp)")
+            #endif
             _ = try await APIClient.shared.approve(sessionID, signature: sig)
             lastMessage = "Approved \(s.pc_name)"
-            pendingOnlineSessionID = nil
-        } catch {
-            lastMessage = error.localizedDescription
-        }
+        } catch { lastMessage = error.localizedDescription }
     }
 
     func rejectOnline(sessionID: String) async {
         do {
             _ = try await APIClient.shared.reject(sessionID)
-            pendingOnlineSessionID = nil
+            queuedOnlineSessionIDs.removeAll { $0 == sessionID }
+            if pendingOnlineSessionID == sessionID { pendingOnlineSessionID = nil }
             lastMessage = "Rejected"
-        } catch {
-            lastMessage = error.localizedDescription
-        }
+            processNextOnlineSessionIfPossible()
+        } catch { lastMessage = error.localizedDescription }
     }
 
     func pair(from raw: String) async {
         isBusy = true
-        defer { isBusy = false }
-
+        defer { isBusy = false; processNextOnlineSessionIfPossible() }
         do {
             let payload = try JSONDecoder().decode(PairingPayload.self, from: Data(raw.utf8))
             guard payload.type == "faceunlock-pair-v1" else {
-                throw NSError(
-                    domain: "FaceUnlock",
-                    code: 20,
-                    userInfo: [NSLocalizedDescriptionKey: "Unsupported QR"]
-                )
+                throw NSError(domain: "FaceUnlock", code: 20, userInfo: [NSLocalizedDescriptionKey: "Unsupported QR"])
             }
-
             let response = try await APIClient.shared.completePair(payload)
-
             var cfg = AppConfig.current
             cfg.serverURL = payload.server
             cfg.pcID = response.pc_id
             cfg.pcName = response.pc_name
             cfg.pcPublicKeyPEM = response.pc_public_key_pem
+            cfg.pairedPCPublicKeys[response.pc_id] = response.pc_public_key_pem
             cfg.deviceID = response.device_id
             if let token = response.device_api_token { cfg.deviceAPIToken = token }
             cfg.pairedPCs.removeAll { $0.id == response.pc_id }
             cfg.pairedPCs.append(PairedPC(id: response.pc_id, name: response.pc_name, status: "ACTIVE", last_used_at: nil))
             AppConfig.current = cfg
-
+            configRevision &+= 1
             BLEPeripheralManager.shared.startAdvertising()
             lastMessage = "Paired with \(response.pc_name)"
-        } catch {
-            lastMessage = error.localizedDescription
-        }
+        } catch { lastMessage = error.localizedDescription }
     }
 
     func handleOfflineBLERequest(_ data: Data) async throws -> Data {
         let payload = try JSONDecoder().decode(OfflineUnlockPayload.self, from: data)
-
         let sig: Data
-        if let cached = offlineApprovals.removeValue(forKey: payload.session_id) {
-            sig = cached
-        } else {
+        if let cached = offlineApprovals.removeValue(forKey: payload.session_id) { sig = cached }
+        else {
             try await validateAndAuthenticateOffline(payload)
-            let canonical = Self.canonical(
-                sessionID: payload.session_id,
-                challenge: payload.challenge,
-                pcID: payload.pc_id,
-                expiresAt: payload.expires_at
-            )
-            sig = try DeviceKey.shared.sign(Data(canonical.utf8))
+            sig = try DeviceKey.shared.sign(Data(Self.canonical(sessionID: payload.session_id, challenge: payload.challenge, pcID: payload.pc_id, expiresAt: payload.expires_at).utf8))
         }
-
-        return try JSONEncoder().encode([
-            "ok":"true",
-            "session_id":payload.session_id,
-            "signature":sig.base64EncodedString()
-        ])
+        return try JSONEncoder().encode(["ok":"true", "session_id":payload.session_id, "signature":sig.base64EncodedString()])
     }
-
-    private var pollingTask: Task<Void, Never>?
 
     func startForegroundPolling() {
         guard pollingTask == nil else { return }
+        foregroundStartedAt = Date()
         pollingTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                guard let self = self else { break }
+                guard let self else { break }
                 if !self.isBusy && self.pendingOnlineSessionID == nil && AppConfig.current.deviceAPIToken != nil {
                     if let res = try? await APIClient.shared.pendingUnlock(), res.pending, let sid = res.session_id {
-                        self.pendingOnlineSessionID = sid
-                        await self.approveOnline(sessionID: sid)
+                        self.enqueueOnlineSession(sid)
+                        self.processNextOnlineSessionIfPossible()
                     }
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let interval: UInt64 = Date().timeIntervalSince(self.foregroundStartedAt) < 30 ? 1_000_000_000 : 4_000_000_000
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
 
-    func stopForegroundPolling() {
-        pollingTask?.cancel()
-        pollingTask = nil
-    }
+    func stopForegroundPolling() { pollingTask?.cancel(); pollingTask = nil }
 
     func approveOfflineQR(_ payload: OfflineUnlockPayload) async throws {
         try await validateAndAuthenticateOffline(payload)
-
-        let canonical = Self.canonical(
-            sessionID: payload.session_id,
-            challenge: payload.challenge,
-            pcID: payload.pc_id,
-            expiresAt: payload.expires_at
-        )
+        let canonical = Self.canonical(sessionID: payload.session_id, challenge: payload.challenge, pcID: payload.pc_id, expiresAt: payload.expires_at)
         offlineApprovals[payload.session_id] = try DeviceKey.shared.sign(Data(canonical.utf8))
         BLEPeripheralManager.shared.startAdvertising()
     }
 
     private func validateAndAuthenticateOffline(_ payload: OfflineUnlockPayload) async throws {
         guard payload.type == "faceunlock-offline-v1" else {
-            throw NSError(
-                domain: "FaceUnlock",
-                code: 21,
-                userInfo: [NSLocalizedDescriptionKey: "Wrong offline payload"]
-            )
+            throw NSError(domain: "FaceUnlock", code: 21, userInfo: [NSLocalizedDescriptionKey: "Wrong offline payload"])
         }
-
         guard payload.expires_at >= Int64(Date().timeIntervalSince1970) else {
-            throw NSError(
-                domain: "FaceUnlock",
-                code: 22,
-                userInfo: [NSLocalizedDescriptionKey: "Request expired"]
-            )
+            throw NSError(domain: "FaceUnlock", code: 22, userInfo: [NSLocalizedDescriptionKey: "Request expired"])
         }
-
         let cfg = AppConfig.current
-        guard payload.pc_id == cfg.pcID, let pcPEM = cfg.pcPublicKeyPEM else {
-            throw NSError(
-                domain: "FaceUnlock",
-                code: 23,
-                userInfo: [NSLocalizedDescriptionKey: "PC is not paired"]
-            )
+        guard let pcPEM = cfg.publicKey(forPC: payload.pc_id) else {
+            throw NSError(domain: "FaceUnlock", code: 23, userInfo: [NSLocalizedDescriptionKey: "PC is not paired"])
         }
-
         let unsigned: String
         if let logicalRequestID = payload.logical_request_id, !logicalRequestID.isEmpty {
             unsigned = "faceunlock-offline-request-v2|\(payload.session_id)|\(payload.challenge)|\(payload.pc_id)|\(payload.expires_at)|\(logicalRequestID)|\(payload.online_session_id ?? "")"
         } else {
             unsigned = "faceunlock-offline-request-v1|\(payload.session_id)|\(payload.challenge)|\(payload.pc_id)|\(payload.expires_at)"
         }
-
-        guard let sig = Data(base64Encoded: payload.pc_signature),
-              SignatureVerifier.verifyPEM(
-                pcPEM,
-                message: Data(unsigned.utf8),
-                signatureDER: sig
-              ) else {
-            throw NSError(
-                domain: "FaceUnlock",
-                code: 24,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid PC signature"]
-            )
+        guard let sig = Data(base64Encoded: payload.pc_signature), SignatureVerifier.verifyPEM(pcPEM, message: Data(unsigned.utf8), signatureDER: sig) else {
+            throw NSError(domain: "FaceUnlock", code: 24, userInfo: [NSLocalizedDescriptionKey: "Invalid PC signature"])
         }
-
         var logicalIDs = [payload.logical_request_id ?? payload.session_id]
-        if let onlineSessionID = payload.online_session_id, !onlineSessionID.isEmpty {
-            logicalIDs.append(onlineSessionID)
-        }
-        try await authenticateOnce(
-            logicalIDs: logicalIDs,
-            pcID: payload.pc_id,
-            expiresAt: payload.expires_at,
-            reason: "Unlock \(payload.pc_name) offline"
-        )
+        if let onlineSessionID = payload.online_session_id, !onlineSessionID.isEmpty { logicalIDs.append(onlineSessionID) }
+        try await authenticateOnce(logicalIDs: logicalIDs, pcID: payload.pc_id, expiresAt: payload.expires_at, reason: "Unlock \(payload.pc_name) offline")
     }
 
-    private func authenticateOnce(
-        logicalIDs: [String],
-        pcID: String,
-        expiresAt: Int64,
-        reason: String
-    ) async throws {
+    private func authenticateOnce(logicalIDs: [String], pcID: String, expiresAt: Int64, reason: String) async throws {
         let keys = Array(Set(logicalIDs.filter { !$0.isEmpty }.map { "\(pcID)|\($0)" }))
         let payloadExpiry = Date(timeIntervalSince1970: TimeInterval(expiresAt))
-        _ = try await biometricApprovalCache.authorize(keys: keys, expiresAt: payloadExpiry) {
-            try await FaceAuth.authenticate(reason: reason)
-        }
+        _ = try await biometricApprovalCache.authorize(keys: keys, expiresAt: payloadExpiry) { try await FaceAuth.authenticate(reason: reason) }
     }
 
-    static func canonical(
-        sessionID: String,
-        challenge: String,
-        pcID: String,
-        expiresAt: Int64
-    ) -> String {
+    static func canonical(sessionID: String, challenge: String, pcID: String, expiresAt: Int64) -> String {
         "faceunlock-v1|\(sessionID)|\(challenge)|\(pcID)|\(expiresAt)"
     }
 }

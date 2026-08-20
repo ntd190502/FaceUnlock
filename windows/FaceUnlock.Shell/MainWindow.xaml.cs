@@ -18,9 +18,7 @@ public partial class MainWindow : Window
         _engine = engine;
         _previewState = previewState;
         _engine.StateChanged += Engine_StateChanged;
-
         PcName.Text = Environment.MachineName.ToUpperInvariant();
-
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
         Deactivated += MainWindow_Deactivated;
@@ -38,102 +36,117 @@ public partial class MainWindow : Window
         await _engine.InitializeAndAutoStartAsync();
     }
 
-    private void Engine_StateChanged(ShellState state, string message)
+    private void Engine_StateChanged(ShellState state, string message) => Dispatcher.Invoke(() => UpdateUiForState(state, message));
+
+    private void UpdateTransportIndicators(string message)
     {
-        Dispatcher.Invoke(() =>
+        var hasBluetooth = message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase);
+        var waitingConnectivity = message.Contains("connectivity", StringComparison.OrdinalIgnoreCase);
+        var internetRestored = message.Contains("Internet", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("restored", StringComparison.OrdinalIgnoreCase);
+
+        if (hasBluetooth)
         {
-            UpdateUiForState(state, message);
-        });
+            OnlineStatus.Text = "Offline";
+            OnlineDot.Fill = BrushFromRgb(0xFB, 0xBF, 0x24);
+            BluetoothStatus.Text = message.Contains("unavailable", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("off", StringComparison.OrdinalIgnoreCase)
+                ? "Bluetooth Waiting" : "Bluetooth Active";
+        }
+        else if (internetRestored || !waitingConnectivity)
+        {
+            OnlineStatus.Text = "Online";
+            OnlineDot.Fill = BrushFromRgb(0x54, 0xE4, 0x9A);
+            BluetoothStatus.Text = "Bluetooth Standby";
+        }
+        else
+        {
+            OnlineStatus.Text = "Waiting";
+            OnlineDot.Fill = BrushFromRgb(0xFB, 0xBF, 0x24);
+            BluetoothStatus.Text = "Bluetooth Waiting";
+        }
     }
 
     private void UpdateUiForState(ShellState state, string message)
     {
-        OnlineStatus.Text = "Online";
-        BluetoothStatus.Text = "Bluetooth Ready";
-
+        UpdateTransportIndicators(message);
         switch (state)
         {
             case ShellState.INITIALIZING:
                 StatusTitle.Text = "Waiting for iPhone";
                 StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
-                StatusDetail.Text = "Connecting to your iPhone to unlock";
+                StatusDetail.Text = "Connecting to FaceUnlock Service";
                 break;
-
             case ShellState.SERVICE_UNAVAILABLE:
-                StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
+                StatusTitle.Text = "Service unavailable";
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
                 StatusDetail.Text = "Retrying automatically...";
+                OnlineStatus.Text = "Waiting";
                 break;
-
             case ShellState.NOT_PAIRED:
-                StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)); // Amber
-                StatusDetail.Text = "Retrying automatically...";
+                StatusTitle.Text = "iPhone not paired";
+                StatusTitle.Foreground = BrushFromRgb(0xFB, 0xBF, 0x24);
+                StatusDetail.Text = "Waiting for setup...";
                 break;
-
             case ShellState.WAITING_FACE_ID:
-                StatusTitle.Text = "Waiting for approval";
-                StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
-                StatusDetail.Text = message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase) ? "Keep your iPhone nearby" : "Check your iPhone";
-                if (message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase)) { StatusTitle.Text = "Connecting via Bluetooth"; StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8); OnlineStatus.Text = "Offline"; BluetoothStatus.Text = "Bluetooth Connected"; }
+                if (message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase))
+                {
+                    StatusTitle.Text = "Connecting via Bluetooth";
+                    StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                    StatusDetail.Text = "Keep your iPhone nearby";
+                }
+                else
+                {
+                    StatusTitle.Text = "Waiting for approval";
+                    StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
+                    StatusDetail.Text = "Check your iPhone";
+                }
                 break;
-
             case ShellState.APPROVED:
                 StatusTitle.Text = "Unlocked";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
+                StatusTitle.Foreground = BrushFromRgb(0x34, 0xD3, 0x99);
                 StatusDetail.Text = "Verifying approval";
                 break;
-
             case ShellState.REJECTED:
                 StatusTitle.Text = "Request declined";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
                 StatusDetail.Text = "Retrying automatically...";
                 break;
-
             case ShellState.TIMEOUT:
-                StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)); // Amber
+                StatusTitle.Text = "Request timed out";
+                StatusTitle.Foreground = BrushFromRgb(0xFB, 0xBF, 0x24);
                 StatusDetail.Text = "Retrying automatically...";
                 break;
-
             case ShellState.OFFLINE:
             case ShellState.ERROR:
                 StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
                 StatusDetail.Text = "Retrying automatically...";
                 break;
-
             case ShellState.INPUT_GUARD_FAILED:
-                StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71));
-                StatusDetail.Text = "Retrying automatically...";
+                StatusTitle.Text = "Input guard unavailable";
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
+                StatusDetail.Text = "Use recovery or restart FaceUnlock";
                 break;
-
             case ShellState.STARTING_DESKTOP:
                 StatusTitle.Text = "Unlocked";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
-                StatusDetail.Text = "Verifying approval";
+                StatusTitle.Foreground = BrushFromRgb(0x34, 0xD3, 0x99);
+                StatusDetail.Text = "Starting Windows Desktop";
                 break;
-
             case ShellState.DESKTOP_FAILED:
-                StatusTitle.Text = "Unable to connect";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
+                StatusTitle.Text = "Desktop start failed";
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
                 StatusDetail.Text = "Retrying automatically...";
                 break;
-
             case ShellState.TEST_PASS:
                 StatusTitle.Text = "Unlocked";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
+                StatusTitle.Foreground = BrushFromRgb(0x34, 0xD3, 0x99);
                 StatusDetail.Text = "Test approval complete";
                 break;
         }
 
-        if (state is ShellState.APPROVED or ShellState.TEST_PASS)
-        {
-            PlayApprovedTransition();
-        }
+        if (state is ShellState.APPROVED or ShellState.TEST_PASS) PlayApprovedTransition();
 
-        // If desktop started successfully in shell mode, wait 1.5s then exit application cleanly
         if (state == ShellState.STARTING_DESKTOP && _engine.Mode == ShellMode.Shell)
         {
             _ = Task.Run(async () =>
@@ -142,20 +155,16 @@ public partial class MainWindow : Window
                 Dispatcher.Invoke(() =>
                 {
                     if (_engine.ExplorerStarted && _engine.CurrentState == ShellState.STARTING_DESKTOP)
-                    {
                         Application.Current.Shutdown(0);
-                    }
                 });
             });
         }
     }
 
-    // Test-only visual states never start the engine or grant access to the desktop.
     private void ApplyPreviewState(string previewState)
     {
         OnlineStatus.Text = "Online";
-        BluetoothStatus.Text = "Bluetooth Ready";
-
+        BluetoothStatus.Text = "Bluetooth Standby";
         switch (previewState.Trim().ToLowerInvariant())
         {
             case "bluetooth":
@@ -163,7 +172,7 @@ public partial class MainWindow : Window
                 StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
                 StatusDetail.Text = "Keep your iPhone nearby";
                 OnlineStatus.Text = "Offline";
-                BluetoothStatus.Text = "Bluetooth Connected";
+                BluetoothStatus.Text = "Bluetooth Active";
                 break;
             case "approval":
                 StatusTitle.Text = "Waiting for approval";
@@ -179,6 +188,7 @@ public partial class MainWindow : Window
                 StatusTitle.Text = "Unlocked";
                 StatusTitle.Foreground = BrushFromRgb(0x34, 0xD3, 0x99);
                 StatusDetail.Text = "Test approval complete";
+                PlayApprovedTransition();
                 break;
             case "error":
                 StatusTitle.Text = "Unable to connect";
@@ -191,11 +201,6 @@ public partial class MainWindow : Window
                 StatusDetail.Text = "Connecting to your iPhone to unlock";
                 break;
         }
-
-        if (previewState.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase))
-        {
-            PlayApprovedTransition();
-        }
     }
 
     private void PlayApprovedTransition()
@@ -204,9 +209,7 @@ public partial class MainWindow : Window
         ((Storyboard)FindResource("ApprovedTransition")).Begin(this);
     }
 
-    private static SolidColorBrush BrushFromRgb(byte red, byte green, byte blue) =>
-        new(Color.FromRgb(red, green, blue));
-
+    private static SolidColorBrush BrushFromRgb(byte red, byte green, byte blue) => new(Color.FromRgb(red, green, blue));
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
@@ -217,35 +220,23 @@ public partial class MainWindow : Window
             ReassertLockedWindow();
             return;
         }
-
         _engine.Shutdown();
     }
 
     private void MainWindow_Deactivated(object? sender, EventArgs e)
     {
-        if (!_engine.IsGateLocked || _focusReclaimPending)
-        {
-            return;
-        }
-
+        if (!_engine.IsGateLocked || _focusReclaimPending) return;
         _focusReclaimPending = true;
         Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
         {
             _focusReclaimPending = false;
-            if (_engine.IsGateLocked && IsVisible && !IsActive)
-            {
-                ReassertLockedWindow();
-            }
+            if (_engine.IsGateLocked && IsVisible && !IsActive) ReassertLockedWindow();
         });
     }
 
     private void ReassertLockedWindow()
     {
-        if (!_engine.IsGateLocked)
-        {
-            return;
-        }
-
+        if (!_engine.IsGateLocked) return;
         WindowState = WindowState.Maximized;
         Topmost = true;
         Activate();

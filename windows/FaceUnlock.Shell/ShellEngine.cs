@@ -9,29 +9,8 @@ using FaceUnlock.Core;
 
 namespace FaceUnlock.Shell;
 
-public enum ShellMode
-{
-    Test,
-    Shell
-}
-
-public enum ShellState
-{
-    INITIALIZING,
-    SERVICE_UNAVAILABLE,
-    NOT_PAIRED,
-    WAITING_FACE_ID,
-    APPROVED,
-    REJECTED,
-    TIMEOUT,
-    OFFLINE,
-    ERROR,
-    RECOVERY,
-    STARTING_DESKTOP,
-    DESKTOP_FAILED,
-    INPUT_GUARD_FAILED,
-    TEST_PASS
-}
+public enum ShellMode { Test, Shell }
+public enum ShellState { INITIALIZING, SERVICE_UNAVAILABLE, NOT_PAIRED, WAITING_FACE_ID, APPROVED, REJECTED, TIMEOUT, OFFLINE, ERROR, RECOVERY, STARTING_DESKTOP, DESKTOP_FAILED, INPUT_GUARD_FAILED, TEST_PASS }
 
 public interface IExplorerLauncher
 {
@@ -42,25 +21,15 @@ public interface IExplorerLauncher
 public class DefaultExplorerLauncher : IExplorerLauncher
 {
     public bool FileExists(string path) => File.Exists(path);
-
     public bool StartProcess(string path, out string? errorMessage)
     {
         errorMessage = null;
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = path,
-                UseShellExecute = true
-            };
-            var proc = Process.Start(psi);
+            var proc = Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
             return proc != null;
         }
-        catch (Exception ex)
-        {
-            errorMessage = ex.Message;
-            return false;
-        }
+        catch (Exception ex) { errorMessage = ex.Message; return false; }
     }
 }
 
@@ -72,20 +41,18 @@ public sealed class ShellEngine
     private readonly string _logFile;
     private readonly IShellInputGuard _inputGuard;
     private readonly object _stateLock = new();
-
     private ShellState _currentState = ShellState.INITIALIZING;
     private string _statusMessage = "Starting FaceUnlock Shell...";
     private string? _currentRequestId;
-    private bool _isAttemptInProgress = false;
-    private bool _explorerStarted = false;
-    private bool _desktopReleaseAuthorized = false;
-    private bool _inputGuardAttempted = false;
-    private bool _inputGuardFailed = false;
+    private bool _isAttemptInProgress;
+    private bool _explorerStarted;
+    private bool _desktopReleaseAuthorized;
+    private bool _inputGuardAttempted;
+    private bool _inputGuardFailed;
     private CancellationTokenSource? _attemptCts;
     private readonly int _processId = Environment.ProcessId;
 
     public event Action<ShellState, string>? StateChanged;
-
     public ShellState CurrentState => _currentState;
     public string StatusMessage => _statusMessage;
     public ShellMode Mode => _mode;
@@ -97,19 +64,10 @@ public sealed class ShellEngine
 
     public ShellEngine(ShellMode mode, string pipeName = "FaceUnlock.Auth.v1", IExplorerLauncher? launcher = null, string? customLogFile = null, IShellInputGuard? inputGuard = null)
     {
-        _mode = mode;
-        _pipeName = pipeName;
-        _launcher = launcher ?? new DefaultExplorerLauncher();
-        _inputGuard = inputGuard ?? new ShellInputGuard();
-
+        _mode = mode; _pipeName = pipeName; _launcher = launcher ?? new DefaultExplorerLauncher(); _inputGuard = inputGuard ?? new ShellInputGuard();
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "logs");
         _logFile = customLogFile ?? Path.Combine(logDir, "shell.log");
-
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(_logFile)!);
-        }
-        catch { }
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_logFile)!); } catch { }
     }
 
     public void Log(string message)
@@ -117,428 +75,180 @@ public sealed class ShellEngine
         try
         {
             var line = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fffZ}] [{_mode}] {message}{Environment.NewLine}";
-            lock (_stateLock)
-            {
-                File.AppendAllText(_logFile, line, Encoding.UTF8);
-            }
+            lock (_stateLock) File.AppendAllText(_logFile, line, Encoding.UTF8);
         }
         catch { }
     }
 
     private void SetState(ShellState newState, string message)
     {
-        lock (_stateLock)
-        {
-            _currentState = newState;
-            _statusMessage = message;
-        }
+        lock (_stateLock) { _currentState = newState; _statusMessage = message; }
         Log($"State -> {newState}: {message}");
-        try
-        {
-            StateChanged?.Invoke(newState, message);
-        }
-        catch { }
+        try { StateChanged?.Invoke(newState, message); } catch { }
     }
 
     public async Task InitializeAndAutoStartAsync(CancellationToken ct = default, int maxRetries = 15)
     {
-        var sid = GetCurrentWindowsUserSid();
-        var session = GetCurrentWindowsSessionId();
-        Log($"Startup: SID={sid ?? "(null)"} SessionID={session} Mode={_mode}");
-
+        Log($"Startup: SID={GetCurrentWindowsUserSid() ?? "(null)"} SessionID={GetCurrentWindowsSessionId()} Mode={_mode}");
+        if (!EnsureInputGuard()) return;
+        var retryDelay = TimeSpan.FromSeconds(2);
         SetState(ShellState.INITIALIZING, "Connecting to FaceUnlock Service...");
-
-        if (!EnsureInputGuard())
+        while (!ct.IsCancellationRequested && !_explorerStarted)
         {
-            return;
-        }
-
-        // 1. Health check service with retries (up to ~10-15s)
-        bool serviceOk = false;
-        try
-        {
-            for (int i = 0; i < maxRetries; i++)
+            var serviceOk = false;
+            for (var i = 0; i < maxRetries && !ct.IsCancellationRequested; i++)
             {
-                if (ct.IsCancellationRequested) break;
-
-                var pingResp = await SendIpcAsync(new LocalAuthRequest(1, "ping", Guid.NewGuid().ToString("N")), timeoutMs: 800);
-                if (pingResp != null && pingResp.status == LocalAuthStatus.Ok)
+                var ping = await SendIpcAsync(new LocalAuthRequest(1, "ping", Guid.NewGuid().ToString("N")), 800);
+                if (ping?.status == LocalAuthStatus.Ok) { serviceOk = true; break; }
+                try { await Task.Delay(500, ct); }
+                catch (OperationCanceledException)
                 {
-                    serviceOk = true;
-                    break;
+                    SetState(ShellState.SERVICE_UNAVAILABLE, "FaceUnlock Service unavailable.");
+                    return;
                 }
-                await Task.Delay(500, ct);
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Timeout reached during connection attempts
-        }
+            if (!serviceOk)
+            {
+                SetState(ShellState.SERVICE_UNAVAILABLE, "FaceUnlock Service unavailable. Retrying automatically...");
+                if (maxRetries <= 0) return;
+                if (!await DelayForRetryAsync(retryDelay, ct)) return;
+                continue;
+            }
 
-        if (!serviceOk)
-        {
-            Log("Service health check failed: Service unavailable");
-            SetState(ShellState.SERVICE_UNAVAILABLE, "FaceUnlock Service unavailable.");
-            return;
-        }
+            if (CurrentState == ShellState.SERVICE_UNAVAILABLE)
+                SetState(ShellState.INITIALIZING, "FaceUnlock Service restored. Starting unlock request...");
 
-        Log("Service connected. Starting auto Face ID unlock request...");
-        // 2. Automatically initiate exactly ONE Face ID attempt
-        await TryStartFaceIdAttemptAsync(ct);
+            var approved = await TryStartFaceIdAttemptAsync(ct);
+            if (approved || _explorerStarted || ct.IsCancellationRequested) return;
+            var delay = CurrentState == ShellState.NOT_PAIRED ? TimeSpan.FromSeconds(8) : retryDelay;
+            Log($"Attempt ended in {CurrentState}; retrying in {delay.TotalSeconds:0.#}s.");
+            if (!await DelayForRetryAsync(delay, ct)) return;
+        }
+    }
+
+    private static async Task<bool> DelayForRetryAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try { await Task.Delay(delay, ct); return true; } catch (OperationCanceledException) { return false; }
     }
 
     public async Task<bool> TryStartFaceIdAttemptAsync(CancellationToken ct = default)
     {
-        if (!EnsureInputGuard())
-        {
-            return false;
-        }
-
+        if (!EnsureInputGuard()) return false;
         lock (_stateLock)
         {
-            if (_isAttemptInProgress)
-            {
-                Log("Attempt already in progress. Ignoring duplicate start request.");
-                return false;
-            }
-            if (_explorerStarted && _mode == ShellMode.Shell)
-            {
-                Log("Explorer already started. Ignoring request.");
-                return false;
-            }
+            if (_isAttemptInProgress) { Log("Attempt already in progress. Ignoring duplicate start request."); return false; }
+            if (_explorerStarted && _mode == ShellMode.Shell) return false;
             _isAttemptInProgress = true;
         }
-
-        _attemptCts?.Cancel();
-        _attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _attemptCts?.Cancel(); _attemptCts?.Dispose(); _attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var attemptToken = _attemptCts.Token;
-
-        var reqId = Guid.NewGuid().ToString("N");
-        _currentRequestId = reqId;
-        var sid = GetCurrentWindowsUserSid();
-        var session = GetCurrentWindowsSessionId();
-
+        var reqId = Guid.NewGuid().ToString("N"); _currentRequestId = reqId;
+        var sid = GetCurrentWindowsUserSid(); var session = GetCurrentWindowsSessionId();
+        var shellClientType = _mode == ShellMode.Shell ? "shell" : "shell_test";
         SetState(ShellState.WAITING_FACE_ID, "Waiting for iPhone Face ID...");
-
         try
         {
-            // Send request_unlock
-            var shellClientType = _mode == ShellMode.Shell ? "shell" : "shell_test";
-            var req = new LocalAuthRequest(
-                version: 1,
-                command: "request_unlock",
-                request_id: reqId,
-                usage: _mode == ShellMode.Shell ? "shell" : "shell_test",
-                username: Environment.UserName,
-                user_sid: sid,
-                qualified_username: $"{Environment.UserDomainName}\\{Environment.UserName}",
-                session_id: session,
-                client_type: shellClientType,
-                pc_id: Environment.MachineName,
-                process_id: _processId
-            );
+            var req = new LocalAuthRequest(1, "request_unlock", reqId, usage: _mode == ShellMode.Shell ? "shell" : "shell_test",
+                username: Environment.UserName, user_sid: sid, qualified_username: $"{Environment.UserDomainName}\\{Environment.UserName}",
+                session_id: session, client_type: shellClientType, pc_id: Environment.MachineName, process_id: _processId);
+            var ack = await SendIpcAsync(req, 3000);
+            if (ack == null || ack.status == LocalAuthStatus.Error) { SetState(ShellState.ERROR, ack?.message ?? "Service communication failed. Retrying automatically..."); return false; }
+            if (ack.status == LocalAuthStatus.NotPaired) { SetState(ShellState.NOT_PAIRED, "FaceUnlock is not paired with iPhone. Waiting for setup..."); return false; }
 
-            var ack = await SendIpcAsync(req, timeoutMs: 3000);
-            if (ack == null || ack.status == LocalAuthStatus.Error)
-            {
-                Log($"request_unlock failed: {ack?.message ?? "no response"}");
-                SetState(ShellState.ERROR, ack?.message ?? "Service error communicating with FaceUnlock Service");
-                return false;
-            }
-
-            if (ack.status == LocalAuthStatus.NotPaired)
-            {
-                Log("request_unlock rejected: PC is not paired");
-                SetState(ShellState.NOT_PAIRED, "FaceUnlock is not paired with iPhone.");
-                return false;
-            }
-
-            // The Service owns the unbounded connectivity wait. The Shell keeps
-            // this same request ID alive until cancellation or a terminal result.
             while (!attemptToken.IsCancellationRequested)
             {
                 await Task.Delay(1000, attemptToken);
-
-                var statusReq = new LocalAuthRequest(
-                    version: 1,
-                    command: "grant_status",
-                    request_id: reqId,
-                    user_sid: sid,
-                    session_id: session,
-                    client_type: shellClientType,
-                    process_id: _processId
-                );
-
-                var statusResp = await SendIpcAsync(statusReq, timeoutMs: 2000);
+                var statusResp = await SendIpcAsync(new LocalAuthRequest(1, "grant_status", reqId, user_sid: sid, session_id: session, client_type: shellClientType, process_id: _processId), 2000);
                 if (statusResp == null) continue;
-
-                if (statusResp.status == LocalAuthStatus.Approved)
+                switch (statusResp.status)
                 {
-                    Log($"Face ID approved for request_id={reqId}. Proceeding to grant reservation.");
-                    return await HandleApprovalFlowAsync(reqId, sid, session, attemptToken);
-                }
-
-                if (statusResp.status == LocalAuthStatus.Rejected)
-                {
-                    Log($"Face ID rejected for request_id={reqId}");
-                    SetState(ShellState.REJECTED, "Face ID was rejected on iPhone.");
-                    return false;
-                }
-
-                if (statusResp.status == LocalAuthStatus.Timeout || statusResp.status == LocalAuthStatus.Expired)
-                {
-                    Log($"Face ID timeout for request_id={reqId}");
-                    SetState(ShellState.TIMEOUT, "Face ID request timed out.");
-                    return false;
-                }
-
-                if (statusResp.status == LocalAuthStatus.NotPaired)
-                {
-                    SetState(ShellState.NOT_PAIRED, "FaceUnlock is not paired with iPhone.");
-                    return false;
-                }
-
-                if (statusResp.status == LocalAuthStatus.WaitingConnectivity)
-                {
-                    SetState(ShellState.WAITING_FACE_ID, statusResp.message ?? "Waiting for Bluetooth or Internet connectivity...");
-                }
-
-                if (statusResp.status == LocalAuthStatus.Error)
-                {
-                    SetState(ShellState.ERROR, statusResp.message ?? "Face ID authorization error.");
-                    return false;
+                    case LocalAuthStatus.Approved: return await HandleApprovalFlowAsync(reqId, sid, session, attemptToken);
+                    case LocalAuthStatus.Rejected: SetState(ShellState.REJECTED, "Request declined. Retrying automatically..."); return false;
+                    case LocalAuthStatus.Timeout:
+                    case LocalAuthStatus.Expired: SetState(ShellState.TIMEOUT, "Request timed out. Retrying automatically..."); return false;
+                    case LocalAuthStatus.NotPaired: SetState(ShellState.NOT_PAIRED, "FaceUnlock is not paired with iPhone. Waiting for setup..."); return false;
+                    case LocalAuthStatus.WaitingConnectivity: SetState(ShellState.WAITING_FACE_ID, statusResp.message ?? "Waiting for Bluetooth or Internet connectivity..."); break;
+                    case LocalAuthStatus.Error: SetState(ShellState.ERROR, statusResp.message ?? "Authorization error. Retrying automatically..."); return false;
                 }
             }
-
-            if (attemptToken.IsCancellationRequested)
-            {
-                Log($"Attempt cancelled for request_id={reqId}");
-                return false;
-            }
-
             return false;
         }
         catch (OperationCanceledException)
         {
-            await SendIpcAsync(new LocalAuthRequest(1, "cancel_request", reqId, session_id: GetCurrentWindowsSessionId(), client_type: _mode == ShellMode.Shell ? "shell" : "shell_test", process_id: _processId), timeoutMs: 1500);
+            await SendIpcAsync(new LocalAuthRequest(1, "cancel_request", reqId, session_id: GetCurrentWindowsSessionId(), client_type: shellClientType, process_id: _processId), 1500);
             return false;
         }
-        catch (Exception ex)
-        {
-            Log($"Exception during Face ID attempt: {ex.Message}");
-            SetState(ShellState.ERROR, $"Error: {ex.Message}");
-            return false;
-        }
-        finally
-        {
-            lock (_stateLock)
-            {
-                _isAttemptInProgress = false;
-            }
-        }
+        catch (Exception ex) { Log($"Exception during Face ID attempt: {ex.Message}"); SetState(ShellState.ERROR, "Unexpected error. Retrying automatically..."); return false; }
+        finally { lock (_stateLock) _isAttemptInProgress = false; }
     }
 
-    public void CancelFaceIdAttempt()
-    {
-        _attemptCts?.Cancel();
-    }
+    public void CancelFaceIdAttempt() => _attemptCts?.Cancel();
 
     private async Task<bool> HandleApprovalFlowAsync(string reqId, string? sid, int session, CancellationToken ct)
     {
         SetState(ShellState.APPROVED, "Face ID approved. Unlocking...");
-
-        // 1. Reserve grant
-        var reserveReq = new LocalAuthRequest(
-            version: 1,
-            command: "reserve_grant",
-            request_id: reqId,
-            user_sid: sid,
-            session_id: session,
-            client_type: _mode == ShellMode.Shell ? "shell" : "shell_test",
-            process_id: _processId
-        );
-
-        var reserveResp = await SendIpcAsync(reserveReq, timeoutMs: 3000);
-        if (reserveResp == null || reserveResp.status != LocalAuthStatus.Reserved)
-        {
-            Log($"Failed to reserve grant for request_id={reqId}: status={reserveResp?.status} msg={reserveResp?.message}");
-            SetState(ShellState.ERROR, "Authorization grant reservation failed.");
-            return false;
-        }
-
-        // Verify session and user SID bindings returned from grant if available
-        if (!string.IsNullOrWhiteSpace(reserveResp.user_sid) && !string.IsNullOrWhiteSpace(sid))
-        {
-            if (!string.Equals(reserveResp.user_sid, sid, StringComparison.OrdinalIgnoreCase))
-            {
-                Log($"User SID mismatch in reservation: grant={reserveResp.user_sid} current={sid}");
-                SetState(ShellState.ERROR, "Security validation failed: User SID mismatch.");
-                return false;
-            }
-        }
-
-        // 2. Consume grant
-        var consumeReq = new LocalAuthRequest(
-            version: 1,
-            command: "consume_grant",
-            request_id: reqId,
-            user_sid: sid,
-            session_id: session,
-            client_type: _mode == ShellMode.Shell ? "shell" : "shell_test",
-            process_id: _processId
-        );
-
-        var consumeResp = await SendIpcAsync(consumeReq, timeoutMs: 3000);
-        if (consumeResp == null || consumeResp.status != LocalAuthStatus.Consumed)
-        {
-            Log($"Failed to consume grant for request_id={reqId}: status={consumeResp?.status} msg={consumeResp?.message}");
-            SetState(ShellState.ERROR, "Authorization grant consumption failed.");
-            return false;
-        }
-        if (!string.Equals(consumeResp.user_sid, sid, StringComparison.OrdinalIgnoreCase)
-            || consumeResp.session_id != session)
-        {
-            Log($"Consumed grant binding mismatch: response_sid={consumeResp.user_sid} response_session={consumeResp.session_id} current_sid={sid} current_session={session}");
-            SetState(ShellState.ERROR, "Consumed authorization binding validation failed.");
-            return false;
-        }
-
-        Log($"Grant consumed successfully for request_id={reqId}");
-
-        // 3. Process Desktop Release
-        if (_mode == ShellMode.Test)
-        {
-            Log("TEST MODE: Explorer launch skipped. Setting TEST_PASS.");
-            SetState(ShellState.TEST_PASS, "TEST PASS — Explorer launch would occur in Shell Mode.");
-            return true;
-        }
-
+        var clientType = _mode == ShellMode.Shell ? "shell" : "shell_test";
+        var reserveResp = await SendIpcAsync(new LocalAuthRequest(1, "reserve_grant", reqId, user_sid: sid, session_id: session, client_type: clientType, process_id: _processId), 3000);
+        if (reserveResp?.status != LocalAuthStatus.Reserved) { SetState(ShellState.ERROR, "Authorization reservation failed. Retrying automatically..."); return false; }
+        if (!string.IsNullOrWhiteSpace(reserveResp.user_sid) && !string.IsNullOrWhiteSpace(sid) && !string.Equals(reserveResp.user_sid, sid, StringComparison.OrdinalIgnoreCase)) { SetState(ShellState.ERROR, "Authorization binding mismatch."); return false; }
+        var consumeResp = await SendIpcAsync(new LocalAuthRequest(1, "consume_grant", reqId, user_sid: sid, session_id: session, client_type: clientType, process_id: _processId), 3000);
+        if (consumeResp?.status != LocalAuthStatus.Consumed || !string.Equals(consumeResp.user_sid, sid, StringComparison.OrdinalIgnoreCase) || consumeResp.session_id != session) { SetState(ShellState.ERROR, "Authorization consumption failed. Retrying automatically..."); return false; }
+        if (_mode == ShellMode.Test) { SetState(ShellState.TEST_PASS, "TEST PASS — Explorer launch would occur in Shell Mode."); return true; }
         return CompleteApprovedGrantAndLaunchExplorer();
     }
 
     internal bool CompleteApprovedGrantAndLaunchExplorer()
     {
-        lock (_stateLock)
-        {
-            if (_inputGuardFailed)
-            {
-                Log("Desktop release rejected because the input guard is in a failed state.");
-                return false;
-            }
-            _desktopReleaseAuthorized = true;
-        }
-
+        lock (_stateLock) { if (_inputGuardFailed) return false; _desktopReleaseAuthorized = true; }
         if (!_inputGuard.TryUninstall(out var guardError))
         {
-            lock (_stateLock)
-            {
-                _desktopReleaseAuthorized = false;
-                _inputGuardFailed = true;
-            }
-            SetState(ShellState.INPUT_GUARD_FAILED, $"Could not release keyboard input safely: {guardError}");
-            return false;
+            lock (_stateLock) { _desktopReleaseAuthorized = false; _inputGuardFailed = true; }
+            SetState(ShellState.INPUT_GUARD_FAILED, $"Could not release keyboard input safely: {guardError}"); return false;
         }
-
         Log("Input guard removed after approved grant consumption.");
         return LaunchExplorerSafe();
     }
 
     public bool RetryExplorerSafe()
     {
-        lock (_stateLock)
-        {
-            if (!_desktopReleaseAuthorized || _inputGuardFailed)
-            {
-                Log("Desktop retry rejected because no approved desktop release is active.");
-                return false;
-            }
-        }
+        lock (_stateLock) { if (!_desktopReleaseAuthorized || _inputGuardFailed) return false; }
         return LaunchExplorerSafe();
     }
 
     private bool LaunchExplorerSafe()
     {
-        lock (_stateLock)
-        {
-            if (_explorerStarted)
-            {
-                Log("Explorer already started. Guard prevented duplicate start.");
-                return true;
-            }
-            _explorerStarted = true;
-        }
-
+        lock (_stateLock) { if (_explorerStarted) return true; _explorerStarted = true; }
         SetState(ShellState.STARTING_DESKTOP, "Starting Windows Desktop...");
-
-        var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var explorerPath = Path.Combine(winDir, "explorer.exe");
-
+        var explorerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
         if (!_launcher.FileExists(explorerPath))
         {
-            Log($"explorer.exe not found at {explorerPath}");
-            SetState(ShellState.DESKTOP_FAILED, "Windows Desktop executable (explorer.exe) not found.");
-            return false;
+            lock (_stateLock) _explorerStarted = false;
+            SetState(ShellState.DESKTOP_FAILED, "Windows Desktop executable was not found. Retrying automatically..."); _ = RetryDesktopWithBackoffAsync(); return false;
         }
+        if (_launcher.StartProcess(explorerPath, out var err)) { Log("explorer.exe process launched successfully."); return true; }
+        Log($"Failed to launch explorer.exe: {err}"); lock (_stateLock) _explorerStarted = false;
+        SetState(ShellState.DESKTOP_FAILED, "Desktop failed to start. Retrying automatically..."); _ = RetryDesktopWithBackoffAsync(); return false;
+    }
 
-        Log($"Launching explorer: {explorerPath}");
-        if (_launcher.StartProcess(explorerPath, out var err))
-        {
-            Log("explorer.exe process launched successfully.");
-            return true;
-        }
-        else
-        {
-            Log($"Failed to launch explorer.exe: {err}");
-            lock (_stateLock)
-            {
-                _explorerStarted = false; // Allow Retry Desktop
-            }
-            SetState(ShellState.DESKTOP_FAILED, $"Desktop failed to start: {err}");
-            return false;
-        }
+    private async Task RetryDesktopWithBackoffAsync()
+    {
+        for (var attempt = 1; attempt <= 5; attempt++) { await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt)); if (RetryExplorerSafe()) return; }
+        Log("Desktop automatic retry exhausted; Shell remains available for recovery.");
     }
 
     private bool EnsureInputGuard()
     {
-        if (_mode == ShellMode.Test)
-        {
-            return true;
-        }
-
-        lock (_stateLock)
-        {
-            if (_inputGuardFailed)
-            {
-                return false;
-            }
-            if (_inputGuardAttempted)
-            {
-                return _inputGuard.IsActive;
-            }
-            _inputGuardAttempted = true;
-        }
-
-        if (_inputGuard.TryInstall(out var error))
-        {
-            Log("Shell input guard installed.");
-            return true;
-        }
-
-        lock (_stateLock)
-        {
-            _inputGuardFailed = true;
-        }
-        SetState(ShellState.INPUT_GUARD_FAILED, $"Keyboard lockdown could not be installed: {error}");
-        return false;
+        if (_mode == ShellMode.Test) return true;
+        lock (_stateLock) { if (_inputGuardFailed) return false; if (_inputGuardAttempted) return _inputGuard.IsActive; _inputGuardAttempted = true; }
+        if (_inputGuard.TryInstall(out var error)) { Log("Shell input guard installed."); return true; }
+        lock (_stateLock) _inputGuardFailed = true;
+        SetState(ShellState.INPUT_GUARD_FAILED, $"Keyboard lockdown could not be installed: {error}"); return false;
     }
 
     public void Shutdown()
     {
-        CancelFaceIdAttempt();
-        if (!_inputGuard.TryUninstall(out var error))
-        {
-            Log($"WARNING: input guard uninstall during shutdown failed: {error}");
-        }
+        CancelFaceIdAttempt(); _attemptCts?.Dispose();
+        if (!_inputGuard.TryUninstall(out var error)) Log($"WARNING: input guard uninstall during shutdown failed: {error}");
         _inputGuard.Dispose();
     }
 
@@ -549,46 +259,15 @@ public sealed class ShellEngine
             using var pipe = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             using var cts = new CancellationTokenSource(timeoutMs);
             await pipe.ConnectAsync(cts.Token);
-
-            using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, leaveOpen: true) { AutoFlush = true };
-
-            var json = JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            await writer.WriteLineAsync(json.AsMemory(), cts.Token);
-
+            using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, true);
+            using var writer = new StreamWriter(pipe, Encoding.UTF8, 4096, true) { AutoFlush = true };
+            await writer.WriteLineAsync(JsonSerializer.Serialize(req, new JsonSerializerOptions(JsonSerializerDefaults.Web)).AsMemory(), cts.Token);
             var line = await reader.ReadLineAsync(cts.Token);
-            if (string.IsNullOrWhiteSpace(line)) return null;
-
-            return JsonSerializer.Deserialize<LocalAuthResponse>(line, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return string.IsNullOrWhiteSpace(line) ? null : JsonSerializer.Deserialize<LocalAuthResponse>(line, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         }
-        catch (Exception ex)
-        {
-            Log($"IPC communication error (cmd={req.command}): {ex.Message}");
-            return null;
-        }
+        catch (Exception ex) { Log($"IPC communication error (cmd={req.command}): {ex.Message}"); return null; }
     }
 
-    public static string? GetCurrentWindowsUserSid()
-    {
-        try
-        {
-            return WindowsIdentity.GetCurrent().User?.Value;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    public static int GetCurrentWindowsSessionId()
-    {
-        try
-        {
-            return Process.GetCurrentProcess().SessionId;
-        }
-        catch
-        {
-            return -1;
-        }
-    }
+    public static string? GetCurrentWindowsUserSid() { try { return WindowsIdentity.GetCurrent().User?.Value; } catch { return null; } }
+    public static int GetCurrentWindowsSessionId() { try { return Process.GetCurrentProcess().SessionId; } catch { return -1; } }
 }
