@@ -44,11 +44,15 @@ jobs:
           $shell = Get-Content windows/FaceUnlock.Shell/ShellEngine.cs -Raw
           $agent = Get-Content windows/FaceUnlock.Agent/MainWindow.xaml.cs -Raw
           $ble = Get-Content windows/FaceUnlock.Core/BleScanner.cs -Raw
+          $lease = Get-Content windows/FaceUnlock.Core/BluetoothLeaseManager.cs -Raw
           if ($shell -notmatch 'RetryDesktopWithBackoffAsync') { throw 'Missing Explorer auto-retry' }
           if ($shell -notmatch 'Retrying automatically') { throw 'Missing Shell retry state' }
           if ($agent -notmatch 'RestartService_Click') { throw 'Missing Agent service recovery control' }
           if ($agent -notmatch 'CancellationTokenSource') { throw 'Pair/test cancellation missing' }
           if ($ble -notmatch 'TimeSpan.FromSeconds\(3\)') { throw 'BLE candidate timeout is not bounded' }
+          if ($ble -notmatch 'PhysicalBleTransaction') { throw 'BLE physical transactions are not serialized' }
+          if ($lease -notmatch 'bluetooth-owned.marker') { throw 'Bluetooth ownership is not persisted across Service restart' }
+          if ($lease -notmatch 'recovered persisted FaceUnlock radio ownership') { throw 'Bluetooth persisted ownership recovery is missing' }
 
   ios-daily-use:
     name: iOS full compile and transport regression
