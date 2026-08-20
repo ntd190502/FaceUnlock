@@ -100,19 +100,21 @@ public sealed class ShellEngine
             {
                 var ping = await SendIpcAsync(new LocalAuthRequest(1, "ping", Guid.NewGuid().ToString("N")), 800);
                 if (ping?.status == LocalAuthStatus.Ok) { serviceOk = true; break; }
-                try { await Task.Delay(500, ct); } catch (OperationCanceledException) { return; }
+                try { await Task.Delay(500, ct); }
+                catch (OperationCanceledException)
+                {
+                    SetState(ShellState.SERVICE_UNAVAILABLE, "FaceUnlock Service unavailable.");
+                    return;
+                }
             }
             if (!serviceOk)
             {
                 SetState(ShellState.SERVICE_UNAVAILABLE, "FaceUnlock Service unavailable. Retrying automatically...");
-                // maxRetries=0 is intentionally used by deterministic safety tests.
                 if (maxRetries <= 0) return;
                 if (!await DelayForRetryAsync(retryDelay, ct)) return;
                 continue;
             }
 
-            // Do not overwrite a useful SERVICE_UNAVAILABLE state until the
-            // service is genuinely reachable again.
             if (CurrentState == ShellState.SERVICE_UNAVAILABLE)
                 SetState(ShellState.INITIALIZING, "FaceUnlock Service restored. Starting unlock request...");
 
