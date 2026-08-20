@@ -70,8 +70,14 @@ public sealed class BleScanner
                 while (addressQueue.TryDequeue(out var address))
                 {
                     if (ct.IsCancellationRequested || DateTime.UtcNow >= deadline) break;
+                    // Restore the proven pre-regression behavior: once a device
+                    // advertising FaceUnlock's service UUID is found, let that
+                    // candidate use the complete remaining scan budget. iPhone
+                    // CoreBluetooth can need more than 3 seconds after radio-on or
+                    // while backgrounded to connect, discover GATT, subscribe and
+                    // receive the request frames.
                     remaining = deadline - DateTime.UtcNow;
-                    var deviceTimeout = remaining < TimeSpan.FromSeconds(3) ? remaining : TimeSpan.FromSeconds(3);
+                    var deviceTimeout = remaining;
                     var result = await TryConnectAndApproveAsync(address, payload, expectedDeviceId, deviceTimeout, ct);
                     if (result != null) return result;
                 }
