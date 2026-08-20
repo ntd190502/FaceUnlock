@@ -134,14 +134,21 @@ public sealed class ShellEngine
     public async Task<bool> TryStartFaceIdAttemptAsync(CancellationToken ct = default)
     {
         if (!EnsureInputGuard()) return false;
+        CancellationTokenSource attemptCts;
         lock (_stateLock)
         {
             if (_isAttemptInProgress) { Log("Attempt already in progress. Ignoring duplicate start request."); return false; }
             if (_explorerStarted && _mode == ShellMode.Shell) return false;
             _isAttemptInProgress = true;
+            var previous = _attemptCts;
+            _attemptCts = attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (previous != null)
+            {
+                try { previous.Cancel(); } catch (ObjectDisposedException) { }
+                previous.Dispose();
+            }
         }
-        _attemptCts?.Cancel(); _attemptCts?.Dispose(); _attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var attemptToken = _attemptCts.Token;
+        var attemptToken = attemptCts.Token;
         var reqId = Guid.NewGuid().ToString("N"); _currentRequestId = reqId;
         var sid = GetCurrentWindowsUserSid(); var session = GetCurrentWindowsSessionId();
         var shellClientType = _mode == ShellMode.Shell ? "shell" : "shell_test";
@@ -179,10 +186,24 @@ public sealed class ShellEngine
             return false;
         }
         catch (Exception ex) { Log($"Exception during Face ID attempt: {ex.Message}"); SetState(ShellState.ERROR, "Unexpected error. Retrying automatically..."); return false; }
-        finally { lock (_stateLock) _isAttemptInProgress = false; }
+        finally
+        {
+            lock (_stateLock)
+            {
+                _isAttemptInProgress = false;
+                if (ReferenceEquals(_attemptCts, attemptCts)) _attemptCts = null;
+            }
+            attemptCts.Dispose();
+        }
     }
 
-    public void CancelFaceIdAttempt() => _attemptCts?.Cancel();
+    public void CancelFaceIdAttempt()
+    {
+        CancellationTokenSource? cts;
+        lock (_stateLock) cts = _attemptCts;
+        if (cts == null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
 
     private async Task<bool> HandleApprovalFlowAsync(string reqId, string? sid, int session, CancellationToken ct)
     {
@@ -247,7 +268,13 @@ public sealed class ShellEngine
 
     public void Shutdown()
     {
-        CancelFaceIdAttempt(); _attemptCts?.Dispose();
+        CancellationTokenSource? cts;
+        lock (_stateLock) { cts = _attemptCts; _attemptCts = null; }
+        if (cts != null)
+        {
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
+            cts.Dispose();
+        }
         if (!_inputGuard.TryUninstall(out var error)) Log($"WARNING: input guard uninstall during shutdown failed: {error}");
         _inputGuard.Dispose();
     }
