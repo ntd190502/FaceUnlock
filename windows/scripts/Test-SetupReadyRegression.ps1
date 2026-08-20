@@ -4,6 +4,7 @@ param([Parameter(Mandatory=$true)][string]$InstallDir)
 
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This destructive SCM smoke test is restricted to an ephemeral GitHub Actions Windows runner.' }
+$InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $serviceName = 'FaceUnlock Service'
 $serviceExe = [IO.Path]::GetFullPath((Join-Path $InstallDir 'FaceUnlock.Service.exe'))
 $setup = Join-Path $InstallDir 'Setup-Ready.ps1'

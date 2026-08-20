@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $serviceName = 'FaceUnlock Service'
 $dataDir = Join-Path $env:ProgramData 'FaceUnlock'
 $logDir = Join-Path $dataDir 'logs'
