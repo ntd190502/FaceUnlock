@@ -7,9 +7,9 @@ public sealed record BluetoothLeaseStatus(
     string? Message = null);
 
 /// <summary>
-/// Owns Bluetooth state only for the current service lifetime. Multiple logical
-/// requests share one radio lease, and the last request restores OFF only when
-/// this manager has direct evidence that FaceUnlock enabled the radio.
+/// Owns Bluetooth state for FaceUnlock requests. If FaceUnlock turns Bluetooth
+/// on, that ownership is persisted so a Service restart during authentication
+/// does not forget that the radio should be restored OFF after the next cleanup.
 /// </summary>
 public sealed class BluetoothLeaseManager
 {
@@ -17,13 +17,19 @@ public sealed class BluetoothLeaseManager
     private readonly Action<string> _log;
     private readonly SemaphoreSlim _sync = new(1, 1);
     private readonly HashSet<string> _activeRequests = new(StringComparer.Ordinal);
+    private readonly string? _ownershipMarkerPath;
     private bool _radioOwnedByFaceUnlock;
+    private bool _persistedOwnershipPending;
     private long _ownedStateVersion;
 
-    public BluetoothLeaseManager(IBluetoothRadioManager radio, Action<string>? log = null)
+    public BluetoothLeaseManager(IBluetoothRadioManager radio, Action<string>? log = null, string? ownershipMarkerPath = null)
     {
         _radio = radio;
         _log = log ?? (_ => { });
+        _ownershipMarkerPath = ownershipMarkerPath ?? DefaultOwnershipMarkerPath();
+        _persistedOwnershipPending = ReadOwnershipMarker();
+        if (_persistedOwnershipPending)
+            _log("[BLUETOOTH] recovered persisted FaceUnlock radio ownership");
     }
 
     public int ActiveLeaseCount
@@ -31,7 +37,7 @@ public sealed class BluetoothLeaseManager
         get { lock (_activeRequests) return _activeRequests.Count; }
     }
 
-    public bool RadioOwnedByFaceUnlock => _radioOwnedByFaceUnlock;
+    public bool RadioOwnedByFaceUnlock => _radioOwnedByFaceUnlock || _persistedOwnershipPending;
 
     public async Task<BluetoothLeaseStatus> EnsureEnabledAsync(string requestId, CancellationToken ct = default)
     {
@@ -45,26 +51,41 @@ public sealed class BluetoothLeaseManager
                 {
                     if (_radioOwnedByFaceUnlock && leasedState.StateVersion != _ownedStateVersion)
                     {
-                        _radioOwnedByFaceUnlock = false;
+                        ClearOwnership();
                         _log($"[BLUETOOTH] request_id={requestId} ownership=External reason=state_changed");
                     }
-                    return new(leasedState.State, !_radioOwnedByFaceUnlock, _radioOwnedByFaceUnlock, leasedState.Message);
+                    return new(leasedState.State, !RadioOwnedByFaceUnlock, RadioOwnedByFaceUnlock, leasedState.Message);
                 }
 
                 RemoveRequest(requestId);
                 if (ActiveLeaseCount == 0)
-                    _radioOwnedByFaceUnlock = false;
+                    ClearOwnership();
             }
 
             var current = await _radio.GetStateAsync(ct);
             var initiallyEnabled = current.State == BluetoothState.Enabled;
             if (initiallyEnabled)
             {
+                // A persisted marker means a previous Service process enabled the
+                // radio and died/restarted before it could restore the user's OFF
+                // state. Adopt that lease instead of incorrectly calling it external.
+                if (_persistedOwnershipPending)
+                {
+                    _radioOwnedByFaceUnlock = true;
+                    _persistedOwnershipPending = false;
+                    _ownedStateVersion = current.StateVersion;
+                    _log($"[BLUETOOTH] request_id={requestId} initial_state=Enabled ownership=FaceUnlock recovered=true");
+                }
                 AddRequest(requestId);
                 var owner = _radioOwnedByFaceUnlock ? "FaceUnlock" : "External";
                 _log($"[BLUETOOTH] request_id={requestId} initial_state=Enabled ownership={owner}");
-                return new(current.State, true, _radioOwnedByFaceUnlock, current.Message);
+                return new(current.State, !_radioOwnedByFaceUnlock, _radioOwnedByFaceUnlock, current.Message);
             }
+
+            // If the radio is already OFF, any stale persisted ownership has
+            // fulfilled its purpose and must not affect this new request.
+            if (_persistedOwnershipPending)
+                ClearOwnership();
 
             _log($"[BLUETOOTH] request_id={requestId} initial_state={current.State}");
             if (current.State is not BluetoothState.Disabled)
@@ -79,8 +100,9 @@ public sealed class BluetoothLeaseManager
 
             _radioOwnedByFaceUnlock = true;
             _ownedStateVersion = enabled.StateVersion;
+            WriteOwnershipMarker();
             AddRequest(requestId);
-            _log($"[BLUETOOTH] request_id={requestId} auto_enable=SUCCESS ownership=FaceUnlock");
+            _log($"[BLUETOOTH] request_id={requestId} auto_enable=SUCCESS ownership=FaceUnlock persisted=true");
             return new(BluetoothState.Enabled, false, true, enabled.Message);
         }
         finally
@@ -109,28 +131,37 @@ public sealed class BluetoothLeaseManager
             var current = await _radio.GetStateAsync(ct);
             if (current.StateVersion != _ownedStateVersion)
             {
-                _radioOwnedByFaceUnlock = false;
+                ClearOwnership();
                 _log($"[BLUETOOTH] request_id={requestId} restore_off=SKIPPED ownership=External reason=state_changed");
                 return;
             }
             if (current.State == BluetoothState.Disabled)
             {
-                _radioOwnedByFaceUnlock = false;
+                ClearOwnership();
                 _log($"[BLUETOOTH] request_id={requestId} restore_off=SUCCESS already_off=true");
                 return;
             }
             if (current.State != BluetoothState.Enabled)
             {
-                _radioOwnedByFaceUnlock = false;
+                ClearOwnership();
                 _log($"[BLUETOOTH] request_id={requestId} restore_off=SKIPPED state={current.State}");
                 return;
             }
 
             var disabled = await _radio.SetEnabledAsync(false, ct);
-            _radioOwnedByFaceUnlock = false;
-            _log(disabled.State == BluetoothState.Disabled
-                ? $"[BLUETOOTH] request_id={requestId} restore_off=SUCCESS"
-                : $"[BLUETOOTH] request_id={requestId} restore_off=FAILED state={disabled.State} message={disabled.Message}");
+            if (disabled.State == BluetoothState.Disabled)
+            {
+                ClearOwnership();
+                _log($"[BLUETOOTH] request_id={requestId} restore_off=SUCCESS");
+            }
+            else
+            {
+                // Keep the marker if Windows refused the restore. A later
+                // FaceUnlock request can adopt the ownership and retry cleanup.
+                _radioOwnedByFaceUnlock = false;
+                _persistedOwnershipPending = true;
+                _log($"[BLUETOOTH] request_id={requestId} restore_off=FAILED state={disabled.State} message={disabled.Message}");
+            }
         }
         finally
         {
@@ -162,6 +193,48 @@ public sealed class BluetoothLeaseManager
     private bool ContainsRequest(string requestId)
     {
         lock (_activeRequests) return _activeRequests.Contains(requestId);
+    }
+
+    private void ClearOwnership()
+    {
+        _radioOwnedByFaceUnlock = false;
+        _persistedOwnershipPending = false;
+        DeleteOwnershipMarker();
+    }
+
+    private bool ReadOwnershipMarker()
+    {
+        try { return !string.IsNullOrWhiteSpace(_ownershipMarkerPath) && File.Exists(_ownershipMarkerPath); }
+        catch { return false; }
+    }
+
+    private void WriteOwnershipMarker()
+    {
+        if (string.IsNullOrWhiteSpace(_ownershipMarkerPath)) return;
+        try
+        {
+            var dir = Path.GetDirectoryName(_ownershipMarkerPath);
+            if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(_ownershipMarkerPath, DateTimeOffset.UtcNow.ToString("O"));
+        }
+        catch (Exception ex) { _log($"[BLUETOOTH] ownership persistence write failed error={ex.Message}"); }
+    }
+
+    private void DeleteOwnershipMarker()
+    {
+        if (string.IsNullOrWhiteSpace(_ownershipMarkerPath)) return;
+        try { if (File.Exists(_ownershipMarkerPath)) File.Delete(_ownershipMarkerPath); }
+        catch (Exception ex) { _log($"[BLUETOOTH] ownership persistence cleanup failed error={ex.Message}"); }
+    }
+
+    private static string? DefaultOwnershipMarkerPath()
+    {
+        try
+        {
+            var root = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+            return string.IsNullOrWhiteSpace(root) ? null : Path.Combine(root, "FaceUnlock", "bluetooth-owned.marker");
+        }
+        catch { return null; }
     }
 
     private sealed class RequestRadioManager : IBluetoothRadioManager

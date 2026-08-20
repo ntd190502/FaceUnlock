@@ -9,6 +9,11 @@ namespace FaceUnlock.Core;
 
 public sealed class BleScanner
 {
+    // Windows can have several Shell sessions alive at once. CoreBluetooth sees
+    // those GATT clients as the same physical PC central, so concurrent request
+    // frame streams can interleave and a valid iPhone signature may be delivered
+    // to the wrong logical request. Keep one physical BLE transaction in flight.
+    private static readonly SemaphoreSlim PhysicalBleTransaction = new(1, 1);
     private readonly IBluetoothRadioManager _radioManager;
     public BleScanner(IBluetoothRadioManager? radioManager = null) => _radioManager = radioManager ?? new WindowsBluetoothRadioManager();
 
@@ -23,6 +28,19 @@ public sealed class BleScanner
     public async Task<OfflineBleResponse?> DiscoverAndApproveAsync(OfflineUnlockPayload payload, string? expectedDeviceId = null, TimeSpan timeout = default, CancellationToken ct = default)
     {
         if (timeout == default) timeout = TimeSpan.FromSeconds(8);
+        await PhysicalBleTransaction.WaitAsync(ct);
+        try
+        {
+            return await DiscoverAndApproveExclusiveAsync(payload, expectedDeviceId, timeout, ct);
+        }
+        finally
+        {
+            PhysicalBleTransaction.Release();
+        }
+    }
+
+    private async Task<OfflineBleResponse?> DiscoverAndApproveExclusiveAsync(OfflineUnlockPayload payload, string? expectedDeviceId, TimeSpan timeout, CancellationToken ct)
+    {
         var radio = await _radioManager.EnsureEnabledAsync(ct);
         if (radio.State != BluetoothState.Enabled) throw new InvalidOperationException(radio.Message ?? $"Bluetooth is {radio.State}");
 
@@ -53,8 +71,6 @@ public sealed class BleScanner
                 {
                     if (ct.IsCancellationRequested || DateTime.UtcNow >= deadline) break;
                     remaining = deadline - DateTime.UtcNow;
-                    // A random nearby BLE device must not consume the whole scan
-                    // window. Give each candidate a bounded slice and continue.
                     var deviceTimeout = remaining < TimeSpan.FromSeconds(3) ? remaining : TimeSpan.FromSeconds(3);
                     var result = await TryConnectAndApproveAsync(address, payload, expectedDeviceId, deviceTimeout, ct);
                     if (result != null) return result;
