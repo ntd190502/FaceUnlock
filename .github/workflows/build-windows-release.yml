@@ -80,10 +80,6 @@ jobs:
             if (Test-Path (Join-Path windows/installer/bin $name)) { throw "Legacy file leaked into installer staging: $name" }
           }
 
-          # Also prepare Portable directory
-          New-Item -ItemType Directory -Path windows/dist/Portable -Force
-          Copy-Item windows/installer/bin/* windows/dist/Portable/
-
       - name: Test legacy upgrade migration
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-LegacyCleanup.ps1
@@ -112,4 +108,3 @@ jobs:
           path: |
             windows/dist/FaceUnlock-Setup.exe
             windows/dist/FaceUnlock-Setup.exe.sha256.txt
-            windows/dist/Portable/*
