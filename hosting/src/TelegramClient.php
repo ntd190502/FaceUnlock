@@ -71,4 +71,9 @@ final class TelegramClient {
             'message_id' => $decoded['result']['message_id'] ?? null,
         ];
     }
+    public function sendAdminTest(): array {
+        if ($this->botToken === '' || $this->chatId === '') throw new RuntimeException('Telegram is not configured');
+        $url='https://api.telegram.org/bot'.$this->botToken.'/sendMessage';$ch=curl_init($url);if($ch===false)throw new RuntimeException('Could not initialize cURL');
+        curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['chat_id'=>$this->chatId,'text'=>'FaceUnlock Admin test notification']),CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>12,CURLOPT_HTTPHEADER=>['Content-Type: application/json']]);$body=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);curl_close($ch);if($body===false||$status<200||$status>=300)throw new RuntimeException('Telegram test failed');return ['ok'=>true];
+    }
 }

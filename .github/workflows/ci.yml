@@ -133,6 +133,9 @@ jobs:
       - name: Test Hosting V2 migration and security contract
         run: php hosting/tests/hosting_v2_static_test.php
 
+      - name: Test admin UI and iOS API contract regressions
+        run: php hosting/tests/admin_contract_test.php
+
       - name: Verify current notification architecture
         run: |
           if grep -R -n -E 'PushManager|ApnsClient|aps-environment|remote-notification' ios/FaceUnlock hosting/src; then

@@ -24,4 +24,7 @@ first valid approval the only winner. The opaque Telegram URL is only a locator.
 For shared hosting, core operation does not require cron. Run `php hosting/scripts/migrate.php`
 on deploy and optionally invoke your cleanup command hourly; lazy expiration is also safe.
 `GET /health` is intentionally minimal. `GET /admin` requires a bearer value whose SHA-256
-is configured as `admin.token_hash`; it never exposes secrets.
+is configured as `admin.token_hash`; it never exposes secrets. Browser users open
+`/admin/login` and enter the raw token once; the server stores only a secure, expiring
+session. Generate a hash with `php -r "echo hash('sha256','YOUR_LONG_RANDOM_TOKEN'), PHP_EOL;"`
+or PowerShell: `[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('YOUR_LONG_RANDOM_TOKEN'))).ToLower()`.

@@ -17,7 +17,7 @@ return [
     ],
     'cleanup' => ['rate_limit_retention_seconds'=>86400, 'audit_retention_days'=>90],
     // Set in production; never commit a real value. Admin routes remain disabled without it.
-    'admin' => ['token_hash' => ''],
+    'admin' => ['token_hash' => '', 'session_ttl' => 3600],
     'telegram' => [
         'bot_token' => 'YOUR_TELEGRAM_BOT_TOKEN',
         'chat_id' => 'YOUR_TELEGRAM_CHAT_ID',

@@ -32,6 +32,7 @@ hosting/public/router.php
 hosting/schema.sql
 hosting/scripts/migrate.php
 hosting/src/ApprovalLink.php
+hosting/src/Admin.php
 hosting/src/AuditLog.php
 hosting/src/Auth.php
 hosting/src/Crypto.php
@@ -41,6 +42,7 @@ hosting/src/RateLimiter.php
 hosting/src/TelegramClient.php
 hosting/src/Util.php
 hosting/tests/hosting_v2_static_test.php
+hosting/tests/admin_contract_test.php
 hosting/tests/telegram_plain_url_test.php
 ios/FaceUnlock/AppDelegate.swift
 ios/FaceUnlock/BLE/BLEFrameCodec.swift
