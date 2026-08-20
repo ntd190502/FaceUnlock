@@ -6,22 +6,11 @@
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="Auto">
     <Window.Resources>
-        <Storyboard x:Key="AmbientMotion" RepeatBehavior="Forever" AutoReverse="True">
-            <DoubleAnimation Storyboard.TargetName="AmbientOne" Storyboard.TargetProperty="Opacity" From=".24" To=".40" Duration="0:0:13" />
-            <DoubleAnimation Storyboard.TargetName="BlueWaveMove" Storyboard.TargetProperty="X" From="-28" To="28" Duration="0:0:13" />
-            <DoubleAnimation Storyboard.TargetName="AmbientTwo" Storyboard.TargetProperty="Opacity" From=".20" To=".36" Duration="0:0:15" />
-            <DoubleAnimation Storyboard.TargetName="VioletWaveMove" Storyboard.TargetProperty="X" From="30" To="-30" Duration="0:0:15" />
-        </Storyboard>
-        <Storyboard x:Key="GlassBreathing" RepeatBehavior="Forever" AutoReverse="True">
-            <DoubleAnimation Storyboard.TargetName="TopReflection" Storyboard.TargetProperty="Opacity" From=".16" To=".31" Duration="0:0:5" />
-        </Storyboard>
-        <Storyboard x:Key="PhoneMotion" RepeatBehavior="Forever" AutoReverse="True">
-            <DoubleAnimation Storyboard.TargetName="PhoneFloat" Storyboard.TargetProperty="Y" From="-2" To="2" Duration="0:0:4.5" />
-            <DoubleAnimation Storyboard.TargetName="PhoneReflection" Storyboard.TargetProperty="Opacity" From=".14" To=".29" Duration="0:0:4.5" />
-        </Storyboard>
-        <Storyboard x:Key="IndicatorPulse" RepeatBehavior="Forever" AutoReverse="True">
-            <DoubleAnimation Storyboard.TargetName="OnlineHalo" Storyboard.TargetProperty="Opacity" From=".10" To=".34" Duration="0:0:1.5" />
-            <DoubleAnimation Storyboard.TargetName="BluetoothGlow" Storyboard.TargetProperty="Opacity" From=".10" To=".30" Duration="0:0:1.8" />
+        <Storyboard x:Key="ApprovedTransition">
+            <DoubleAnimation Storyboard.TargetName="SuccessCheck" Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:.15" />
+            <DoubleAnimation Storyboard.TargetName="PhoneVisual" Storyboard.TargetProperty="Opacity" From="1" To=".72" BeginTime="0:0:.15" Duration="0:0:.25" />
+            <DoubleAnimation Storyboard.TargetName="GlassContent" Storyboard.TargetProperty="Opacity" From="1" To="0" BeginTime="0:0:.45" Duration="0:0:.25" />
+            <DoubleAnimation Storyboard.TargetName="PcIdentity" Storyboard.TargetProperty="Opacity" From="1" To="0" BeginTime="0:0:.45" Duration="0:0:.25" />
         </Storyboard>
     </Window.Resources>
 
@@ -31,13 +20,11 @@
                 <GradientStop Color="#101A35" Offset="0" /><GradientStop Color="#060914" Offset=".72" /><GradientStop Color="#02030A" Offset="1" />
             </RadialGradientBrush>
         </Grid.Background>
-        <Border x:Name="AmbientOne" Width="1120" Height="450" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-490,-40,0,0" Opacity=".30">
+        <Border Width="1120" Height="450" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-490,-40,0,0" Opacity=".30">
             <Border.Background><RadialGradientBrush Center=".5,.5" GradientOrigin=".5,.5"><GradientStop Color="#802080FF" /><GradientStop Color="#241363B8" Offset=".55" /><GradientStop Color="#001363B8" Offset="1" /></RadialGradientBrush></Border.Background>
-            <Border.RenderTransform><TranslateTransform x:Name="BlueWaveMove" /></Border.RenderTransform>
         </Border>
-        <Border x:Name="AmbientTwo" Width="1080" Height="430" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,55,-470,0" Opacity=".27">
+        <Border Width="1080" Height="430" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,55,-470,0" Opacity=".27">
             <Border.Background><RadialGradientBrush Center=".5,.5" GradientOrigin=".5,.5"><GradientStop Color="#704A2BA8" /><GradientStop Color="#273A218A" Offset=".58" /><GradientStop Color="#003A218A" Offset="1" /></RadialGradientBrush></Border.Background>
-            <Border.RenderTransform><TranslateTransform x:Name="VioletWaveMove" /></Border.RenderTransform>
         </Border>
 
         <Grid Width="820" Height="455" Margin="0,-18,0,0" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -46,36 +33,32 @@
             </Border>
             <Border CornerRadius="42" BorderThickness="1" SnapsToDevicePixels="True">
                 <Border.BorderBrush><LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#BB6FD3FF" /><GradientStop Color="#508EB8E8" Offset=".45" /><GradientStop Color="#BFAE77FF" Offset="1" /></LinearGradientBrush></Border.BorderBrush>
-                <Border CornerRadius="41" Margin="1" ClipToBounds="True">
+                <Border x:Name="GlassContent" CornerRadius="41" Margin="1" ClipToBounds="True">
                     <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#C21B2C49" /><GradientStop Color="#A00C172A" Offset=".52" /><GradientStop Color="#B7211938" Offset="1" /></LinearGradientBrush></Border.Background>
                     <Grid>
-                        <Ellipse Width="500" Height="150" Fill="#1817B8FF" Opacity=".34" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-80,-105,0,0" />
-                        <Border x:Name="TopReflection" Height="68" CornerRadius="41,41,0,0" VerticalAlignment="Top" Opacity=".22">
+                        <Border Height="68" CornerRadius="41,41,0,0" VerticalAlignment="Top" Opacity=".22">
                             <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#58E6F5FF" /><GradientStop Color="#00D7F3FF" Offset="1" /></LinearGradientBrush></Border.Background>
                         </Border>
                         <Grid Margin="50,21,50,24">
                             <Grid.RowDefinitions><RowDefinition Height="145" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="18" /><RowDefinition Height="22" /><RowDefinition Height="1" /><RowDefinition Height="42" /></Grid.RowDefinitions>
                             <Grid Grid.Row="0" Width="130" Height="145" HorizontalAlignment="Center">
-                                <Ellipse Width="96" Height="126" Fill="#182C75C8" Opacity=".48" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                <Border Width="58" Height="108" CornerRadius="15" Background="#BD142238" BorderThickness="2" BorderBrush="#C7E5FF" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Border.RenderTransform><TranslateTransform x:Name="PhoneFloat" /></Border.RenderTransform>
-                                    <Grid ClipToBounds="True"><Rectangle Width="27" Height="4" RadiusX="2" RadiusY="2" Fill="#B6D8F4" VerticalAlignment="Top" Margin="0,11,0,0" /><Border x:Name="PhoneReflection" Height="27" VerticalAlignment="Top" Opacity=".20"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#9BEAFF" /><GradientStop Color="#009BEAFF" Offset="1" /></LinearGradientBrush></Border.Background></Border></Grid>
+                                <Border x:Name="PhoneVisual" Width="58" Height="108" CornerRadius="15" Background="#BD142238" BorderThickness="2" BorderBrush="#C7E5FF" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Grid ClipToBounds="True"><Rectangle Width="27" Height="4" RadiusX="2" RadiusY="2" Fill="#B6D8F4" VerticalAlignment="Top" Margin="0,11,0,0" /><Border Height="20" VerticalAlignment="Top" Opacity=".12"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#7CE2FF" /><GradientStop Color="#007CE2FF" Offset="1" /></LinearGradientBrush></Border.Background></Border></Grid>
                                 </Border>
-                                <Path x:Name="SuccessCheck" Data="M 0,13 L 9,22 L 27,3" Stroke="#8CF2C5" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" />
+                                <Path x:Name="SuccessCheck" Data="M 0,13 L 9,22 L 27,3" Stroke="#8CF2C5" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" />
                             </Grid>
-                            <Grid Grid.Row="1" x:Name="StatusVisual" RenderTransformOrigin=".5,.5"><Grid.RenderTransform><TranslateTransform x:Name="StatusMove" /></Grid.RenderTransform><TextBlock x:Name="StatusTitle" Text="Waiting for iPhone" FontSize="32" FontWeight="SemiBold" Foreground="#ECF6FF" HorizontalAlignment="Center" TextAlignment="Center" /></Grid>
+                            <TextBlock Grid.Row="1" x:Name="StatusTitle" Text="Waiting for iPhone" FontSize="32" FontWeight="SemiBold" Foreground="#ECF6FF" HorizontalAlignment="Center" TextAlignment="Center" />
                             <TextBlock Grid.Row="2" x:Name="StatusDetail" Text="Connecting to your iPhone to unlock" Margin="0,8,0,0" FontSize="17" Foreground="#B8C5DA" HorizontalAlignment="Center" TextAlignment="Center" />
                             <Border Grid.Row="5" Height="1"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#006C8CA8" /><GradientStop Color="#486C8CA8" Offset=".5" /><GradientStop Color="#006C8CA8" Offset="1" /></LinearGradientBrush></Border.Background></Border>
                             <Grid Grid.Row="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Grid Width="14" Height="14" Margin="0,0,9,0"><Ellipse x:Name="OnlineHalo" Fill="#654EE49A" Opacity=".18" Margin="-2" /><Ellipse x:Name="OnlineDot" Width="9" Height="9" Fill="#54E49A" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid><TextBlock x:Name="OnlineStatus" Text="Online" FontSize="16" Foreground="#BFEFD7" /></StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"><Grid Width="30" Height="36" Margin="0,0,7,0" SnapsToDevicePixels="True"><Ellipse x:Name="BluetoothGlow" Fill="#4557AEFF" Opacity=".18" Margin="2" /><Path Data="M 10,2 L 20,12 L 14,18 L 20,24 L 10,34 L 10,22 L 4,28 L 4,23 L 10,17 L 4,11 L 4,6 L 10,12 Z" Stroke="#93D4FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="24" Height="34" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid><TextBlock x:Name="BluetoothStatus" Text="Bluetooth Ready" FontSize="16" Foreground="#C3D9EF" /></StackPanel>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Ellipse x:Name="OnlineDot" Width="9" Height="9" Fill="#54E49A" Margin="0,0,10,0" /><TextBlock x:Name="OnlineStatus" Text="Online" FontSize="16" Foreground="#BFEFD7" /></StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"><Grid Width="30" Height="36" Margin="0,0,7,0" SnapsToDevicePixels="True"><Path Data="M 10,2 L 20,12 L 14,18 L 20,24 L 10,34 L 10,22 L 4,28 L 4,23 L 10,17 L 4,11 L 4,6 L 10,12 Z" Stroke="#93D4FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="24" Height="34" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid><TextBlock x:Name="BluetoothStatus" Text="Bluetooth Ready" FontSize="16" Foreground="#C3D9EF" /></StackPanel>
                             </Grid>
                         </Grid>
                     </Grid>
                 </Border>
             </Border>
-            <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,-88"><Path Data="M2,2 H32 V23 H2 Z M12,29 H22 M17,23 V29" Stroke="#A8BED9" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="34" Height="32" /><TextBlock x:Name="PcName" Text="DESKTOP" Margin="0,8,0,0" FontSize="19" FontWeight="SemiBold" Foreground="#C8D5E8" HorizontalAlignment="Center" /></StackPanel>
+            <StackPanel x:Name="PcIdentity" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,-88"><Path Data="M2,2 H32 V23 H2 Z M12,29 H22 M17,23 V29" Stroke="#A8BED9" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="34" Height="32" /><TextBlock x:Name="PcName" Text="DESKTOP" Margin="0,8,0,0" FontSize="19" FontWeight="SemiBold" Foreground="#C8D5E8" HorizontalAlignment="Center" /></StackPanel>
         </Grid>
     </Grid>
-    <Window.Triggers><EventTrigger RoutedEvent="Window.Loaded"><BeginStoryboard Storyboard="{StaticResource AmbientMotion}" /><BeginStoryboard Storyboard="{StaticResource GlassBreathing}" /><BeginStoryboard Storyboard="{StaticResource PhoneMotion}" /><BeginStoryboard Storyboard="{StaticResource IndicatorPulse}" /></EventTrigger></Window.Triggers>
 </Window>

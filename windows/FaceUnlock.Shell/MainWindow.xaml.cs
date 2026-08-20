@@ -31,7 +31,7 @@ public partial class MainWindow : Window
         if (_engine.Mode == ShellMode.Test && !string.IsNullOrWhiteSpace(_previewState))
         {
             var dpi = VisualTreeHelper.GetDpi(this);
-            _engine.Log($"Shell visual preview render tier: {RenderCapability.Tier >> 16}; DPI: {dpi.DpiScaleX:0.##}x{dpi.DpiScaleY:0.##}; continuous storyboard groups: 4.");
+            _engine.Log($"Shell visual preview render tier: {RenderCapability.Tier >> 16}; DPI: {dpi.DpiScaleX:0.##}x{dpi.DpiScaleY:0.##}; continuous storyboard groups: 0.");
             ApplyPreviewState(_previewState);
             return;
         }
@@ -128,7 +128,10 @@ public partial class MainWindow : Window
                 break;
         }
 
-        ApplyStateMotion(state == ShellState.APPROVED || state == ShellState.STARTING_DESKTOP || state == ShellState.TEST_PASS);
+        if (state is ShellState.APPROVED or ShellState.TEST_PASS)
+        {
+            PlayApprovedTransition();
+        }
 
         // If desktop started successfully in shell mode, wait 1.5s then exit application cleanly
         if (state == ShellState.STARTING_DESKTOP && _engine.Mode == ShellMode.Shell)
@@ -189,19 +192,16 @@ public partial class MainWindow : Window
                 break;
         }
 
-        ApplyStateMotion(previewState.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase));
+        if (previewState.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase))
+        {
+            PlayApprovedTransition();
+        }
     }
 
-    private void ApplyStateMotion(bool showSuccess)
+    private void PlayApprovedTransition()
     {
-        SuccessCheck.Visibility = showSuccess ? Visibility.Visible : Visibility.Collapsed;
-
-        StatusVisual.Opacity = 0;
-        StatusMove.Y = 5;
-        var duration = TimeSpan.FromMilliseconds(190);
-        StatusVisual.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration));
-        StatusMove.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(5, 0, duration));
-        StatusDetail.BeginAnimation(OpacityProperty, new DoubleAnimation(.25, 1, duration));
+        SuccessCheck.Visibility = Visibility.Visible;
+        ((Storyboard)FindResource("ApprovedTransition")).Begin(this);
     }
 
     private static SolidColorBrush BrushFromRgb(byte red, byte green, byte blue) =>
