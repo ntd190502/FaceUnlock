@@ -6,13 +6,15 @@ struct ContentView: View {
     @State private var showScanner = false
 
     var body: some View {
-        NavigationView {
+        let _ = coordinator.configRevision
+        let cfg = AppConfig.current
+        return NavigationView {
             Form {
                 Section(header: Text("Computer")) {
                     HStack {
                         Text("Name")
                         Spacer()
-                        Text(AppConfig.current.pcName ?? "Not paired")
+                        Text(cfg.pcName ?? "Not paired")
                             .foregroundColor(.secondary)
                     }
                     HStack {
@@ -23,9 +25,15 @@ struct ContentView: View {
                     }
                 }
                 Section(header: Text("Paired PCs")) {
-                    if AppConfig.current.pairedPCs.isEmpty { Text("No paired PCs yet").foregroundColor(.secondary) }
-                    ForEach(AppConfig.current.pairedPCs) { pc in
-                        HStack { Text(pc.name); Spacer(); Text(pc.status).foregroundColor(.secondary) }
+                    if cfg.pairedPCs.isEmpty {
+                        Text("No paired PCs yet").foregroundColor(.secondary)
+                    }
+                    ForEach(cfg.pairedPCs) { pc in
+                        HStack {
+                            Text(pc.name)
+                            Spacer()
+                            Text(pc.status).foregroundColor(.secondary)
+                        }
                     }
                 }
                 if let session = coordinator.pendingOnlineSessionID {
@@ -39,7 +47,7 @@ struct ContentView: View {
                 }
                 Section(header: Text("Pair / offline fallback")) {
                     Button("Scan QR") { showScanner = true }
-                    Button("Start Bluetooth advertising") { ble.startAdvertising() }
+                    Button("Restart Bluetooth advertising") { ble.startAdvertising() }
                 }
                 Section(header: Text("Status")) { Text(coordinator.lastMessage) }
             }
@@ -48,11 +56,19 @@ struct ContentView: View {
                 QRScannerView { code in
                     showScanner = false
                     Task {
-                        if code.contains("faceunlock-pair-v1") { await coordinator.pair(from: code) }
-                        else if let data = code.data(using: .utf8), let p = try? JSONDecoder().decode(OfflineUnlockPayload.self, from: data) {
-                            do { try await coordinator.approveOfflineQR(p); coordinator.lastMessage = "Face ID approved. Waiting for the PC over Bluetooth." }
-                            catch { coordinator.lastMessage = error.localizedDescription }
-                        } else { coordinator.lastMessage = "Unknown QR" }
+                        if code.contains("faceunlock-pair-v1") {
+                            await coordinator.pair(from: code)
+                        } else if let data = code.data(using: .utf8),
+                                  let p = try? JSONDecoder().decode(OfflineUnlockPayload.self, from: data) {
+                            do {
+                                try await coordinator.approveOfflineQR(p)
+                                coordinator.lastMessage = "Face ID approved. Waiting for the PC over Bluetooth."
+                            } catch {
+                                coordinator.lastMessage = error.localizedDescription
+                            }
+                        } else {
+                            coordinator.lastMessage = "Unknown QR"
+                        }
                     }
                 }
                 .ignoresSafeArea()
