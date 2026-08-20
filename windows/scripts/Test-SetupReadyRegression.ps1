@@ -9,6 +9,7 @@ $serviceExe = [IO.Path]::GetFullPath((Join-Path $InstallDir 'FaceUnlock.Service.
 $setup = Join-Path $InstallDir 'Setup-Ready.ps1'
 $cleanupTest = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\Test-LegacyCleanup.ps1'
 $dataDir = Join-Path $env:ProgramData 'FaceUnlock'
+$dataBackup = Join-Path $env:RUNNER_TEMP ("FaceUnlock-ProgramData-Backup-" + [Guid]::NewGuid().ToString('N'))
 $configPath = Join-Path $dataDir 'config.json'
 $tokenPath = Join-Path $dataDir 'pctoken.dpapi'
 $winlogon = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
@@ -52,10 +53,11 @@ function Assert-ServiceHealthy {
 }
 
 if (-not (Test-Path $setup) -or -not (Test-Path $serviceExe)) { throw 'Staged Setup-Ready.ps1 or FaceUnlock.Service.exe is missing.' }
-if (Test-Path $dataDir) { throw "Runner is not clean; refusing to overwrite $dataDir" }
+$hadExistingData = Test-Path $dataDir
 
 try {
     Remove-TestService
+    if ($hadExistingData) { Move-Item -LiteralPath $dataDir -Destination $dataBackup }
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     Set-Content -LiteralPath $configPath -Value '{"DeviceId":"regression-device","DevicePublicKeyPem":"regression-public-key"}' -Encoding utf8
     Set-Content -LiteralPath $tokenPath -Value 'paired-secure-token-sentinel' -Encoding utf8
@@ -90,4 +92,5 @@ finally {
     if ($null -eq $originalShell) { Remove-ItemProperty -Path $winlogon -Name Shell -ErrorAction SilentlyContinue }
     else { Set-ItemProperty -Path $winlogon -Name Shell -Value $originalShell -Force }
     Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($hadExistingData -and (Test-Path $dataBackup)) { Move-Item -LiteralPath $dataBackup -Destination $dataDir }
 }
