@@ -27,7 +27,7 @@
             <Border.Background><RadialGradientBrush Center=".5,.5" GradientOrigin=".5,.5"><GradientStop Color="#704A2BA8" /><GradientStop Color="#273A218A" Offset=".58" /><GradientStop Color="#003A218A" Offset="1" /></RadialGradientBrush></Border.Background>
         </Border>
 
-        <Grid Width="820" Height="455" Margin="0,-18,0,0" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Grid Width="820" Height="415" Margin="0,-18,0,0" HorizontalAlignment="Center" VerticalAlignment="Center">
             <Border CornerRadius="42" Margin="0,3,0,-3" Background="#0102050A" IsHitTestVisible="False">
                 <Border.Effect><DropShadowEffect Color="#664A64BA" BlurRadius="26" ShadowDepth="4" Opacity=".44" /></Border.Effect>
             </Border>
@@ -36,29 +36,29 @@
                 <Border x:Name="GlassContent" CornerRadius="41" Margin="1" ClipToBounds="True">
                     <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#C21B2C49" /><GradientStop Color="#A00C172A" Offset=".52" /><GradientStop Color="#B7211938" Offset="1" /></LinearGradientBrush></Border.Background>
                     <Grid>
-                        <Border Height="68" CornerRadius="41,41,0,0" VerticalAlignment="Top" Opacity=".22">
+                        <Border Height="60" CornerRadius="41,41,0,0" VerticalAlignment="Top" Opacity=".16">
                             <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#58E6F5FF" /><GradientStop Color="#00D7F3FF" Offset="1" /></LinearGradientBrush></Border.Background>
                         </Border>
-                        <Grid Margin="50,21,50,24">
-                            <Grid.RowDefinitions><RowDefinition Height="145" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="18" /><RowDefinition Height="22" /><RowDefinition Height="1" /><RowDefinition Height="42" /></Grid.RowDefinitions>
-                            <Grid Grid.Row="0" Width="130" Height="145" HorizontalAlignment="Center">
-                                <Border x:Name="PhoneVisual" Width="58" Height="108" CornerRadius="15" Background="#BD142238" BorderThickness="2" BorderBrush="#C7E5FF" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Grid Margin="50,18,50,18" VerticalAlignment="Center">
+                            <Grid.RowDefinitions><RowDefinition Height="125" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="12" /><RowDefinition Height="12" /><RowDefinition Height="1" /><RowDefinition Height="40" /></Grid.RowDefinitions>
+                            <Grid Grid.Row="0" Width="130" Height="125" HorizontalAlignment="Center">
+                                <Border x:Name="PhoneVisual" Width="63" Height="117" CornerRadius="16" Background="#BD142238" BorderThickness="2" BorderBrush="#C7E5FF" HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <Grid ClipToBounds="True"><Rectangle Width="27" Height="4" RadiusX="2" RadiusY="2" Fill="#B6D8F4" VerticalAlignment="Top" Margin="0,11,0,0" /><Border Height="20" VerticalAlignment="Top" Opacity=".12"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#7CE2FF" /><GradientStop Color="#007CE2FF" Offset="1" /></LinearGradientBrush></Border.Background></Border></Grid>
                                 </Border>
                                 <Path x:Name="SuccessCheck" Data="M 0,13 L 9,22 L 27,3" Stroke="#8CF2C5" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" />
                             </Grid>
-                            <TextBlock Grid.Row="1" x:Name="StatusTitle" Text="Waiting for iPhone" FontSize="32" FontWeight="SemiBold" Foreground="#ECF6FF" HorizontalAlignment="Center" TextAlignment="Center" />
+                            <TextBlock Grid.Row="1" x:Name="StatusTitle" Text="Waiting for iPhone" FontSize="31" FontWeight="SemiBold" Foreground="#EAF3FF" HorizontalAlignment="Center" TextAlignment="Center" />
                             <TextBlock Grid.Row="2" x:Name="StatusDetail" Text="Connecting to your iPhone to unlock" Margin="0,8,0,0" FontSize="17" Foreground="#B8C5DA" HorizontalAlignment="Center" TextAlignment="Center" />
-                            <Border Grid.Row="5" Height="1"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#006C8CA8" /><GradientStop Color="#486C8CA8" Offset=".5" /><GradientStop Color="#006C8CA8" Offset="1" /></LinearGradientBrush></Border.Background></Border>
-                            <Grid Grid.Row="6"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
-                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Ellipse x:Name="OnlineDot" Width="9" Height="9" Fill="#54E49A" Margin="0,0,10,0" /><TextBlock x:Name="OnlineStatus" Text="Online" FontSize="16" Foreground="#BFEFD7" /></StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"><Grid Width="30" Height="36" Margin="0,0,7,0" SnapsToDevicePixels="True"><Path Data="M 10,2 L 20,12 L 14,18 L 20,24 L 10,34 L 10,22 L 4,28 L 4,23 L 10,17 L 4,11 L 4,6 L 10,12 Z" Stroke="#93D4FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="24" Height="34" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid><TextBlock x:Name="BluetoothStatus" Text="Bluetooth Ready" FontSize="16" Foreground="#C3D9EF" /></StackPanel>
+                            <Border Grid.Row="5" Width="550" Height="1" HorizontalAlignment="Center" Opacity=".64"><Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="#006C8CA8" /><GradientStop Color="#306C8CA8" Offset=".5" /><GradientStop Color="#006C8CA8" Offset="1" /></LinearGradientBrush></Border.Background></Border>
+                            <Grid Grid.Row="6" Width="540" HorizontalAlignment="Center"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Ellipse x:Name="OnlineDot" Width="9" Height="9" Fill="#54E49A" Margin="0,0,10,0" /><TextBlock x:Name="OnlineStatus" Text="Online" FontSize="16" Foreground="#C4CDD9" /></StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"><Grid Width="26" Height="32" Margin="0,0,7,0" SnapsToDevicePixels="True"><Path Data="M 10,2 L 20,12 L 14,18 L 20,24 L 10,34 L 10,22 L 4,28 L 4,23 L 10,17 L 4,11 L 4,6 L 10,12 Z" Stroke="#93D4FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="20" Height="29" HorizontalAlignment="Center" VerticalAlignment="Center" /></Grid><TextBlock x:Name="BluetoothStatus" Text="Bluetooth Ready" FontSize="16" Foreground="#C4CDD9" /></StackPanel>
                             </Grid>
                         </Grid>
                     </Grid>
                 </Border>
             </Border>
-            <StackPanel x:Name="PcIdentity" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,-88"><Path Data="M2,2 H32 V23 H2 Z M12,29 H22 M17,23 V29" Stroke="#A8BED9" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="34" Height="32" /><TextBlock x:Name="PcName" Text="DESKTOP" Margin="0,8,0,0" FontSize="19" FontWeight="SemiBold" Foreground="#C8D5E8" HorizontalAlignment="Center" /></StackPanel>
+            <StackPanel x:Name="PcIdentity" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,-88"><Path Data="M2,2 H32 V23 H2 Z M12,29 H22 M17,23 V29" Stroke="#9FAFC4" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="31" Height="30" /><TextBlock x:Name="PcName" Text="DESKTOP" Margin="0,8,0,0" FontSize="18" FontWeight="Medium" Foreground="#AEBED3" HorizontalAlignment="Center" /></StackPanel>
         </Grid>
     </Grid>
 </Window>

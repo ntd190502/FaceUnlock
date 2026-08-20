@@ -55,7 +55,7 @@ public partial class MainWindow : Window
         {
             case ShellState.INITIALIZING:
                 StatusTitle.Text = "Waiting for iPhone";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)); // Sky
+                StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
                 StatusDetail.Text = "Connecting to your iPhone to unlock";
                 break;
 
@@ -73,9 +73,9 @@ public partial class MainWindow : Window
 
             case ShellState.WAITING_FACE_ID:
                 StatusTitle.Text = "Waiting for approval";
-                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)); // Sky
+                StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
                 StatusDetail.Text = message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase) ? "Keep your iPhone nearby" : "Check your iPhone";
-                if (message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase)) { StatusTitle.Text = "Connecting via Bluetooth"; OnlineStatus.Text = "Offline"; BluetoothStatus.Text = "Bluetooth Connected"; }
+                if (message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase)) { StatusTitle.Text = "Connecting via Bluetooth"; StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8); OnlineStatus.Text = "Offline"; BluetoothStatus.Text = "Bluetooth Connected"; }
                 break;
 
             case ShellState.APPROVED:
@@ -160,14 +160,14 @@ public partial class MainWindow : Window
         {
             case "bluetooth":
                 StatusTitle.Text = "Connecting via Bluetooth";
-                StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
                 StatusDetail.Text = "Keep your iPhone nearby";
                 OnlineStatus.Text = "Offline";
                 BluetoothStatus.Text = "Bluetooth Connected";
                 break;
             case "approval":
                 StatusTitle.Text = "Waiting for approval";
-                StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                StatusTitle.Foreground = BrushFromRgb(0xEA, 0xF3, 0xFF);
                 StatusDetail.Text = "Check your iPhone";
                 break;
             case "verifying":
