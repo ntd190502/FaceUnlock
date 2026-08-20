@@ -57,7 +57,7 @@ function Test-ServicePipe {
     try {
         $client.Connect(1500)
         $writer = [IO.StreamWriter]::new($client, [Text.UTF8Encoding]::new($false), 1024, $true)
-        $reader = [IO.StreamReader]::new($client, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
+        $reader = [IO.StreamReader]::new($client, [Text.UTF8Encoding]::new($false), $true, 1024, $true)
         try {
             $writer.AutoFlush = $true
             $requestId = [Guid]::NewGuid().ToString('N')

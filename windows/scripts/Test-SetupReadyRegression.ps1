@@ -32,7 +32,7 @@ function Test-PipePing {
     try {
         $pipe.Connect(2000)
         $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true); $writer.AutoFlush = $true
-        $reader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
+        $reader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false), $true, 1024, $true)
         try {
             $id = [Guid]::NewGuid().ToString('N')
             $writer.WriteLine((@{version=1;command='ping';request_id=$id;client_type='setup_regression'} | ConvertTo-Json -Compress))
