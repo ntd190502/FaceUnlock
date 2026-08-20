@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     {
         if (_engine.Mode == ShellMode.Test && !string.IsNullOrWhiteSpace(_previewState))
         {
+            _engine.Log($"Shell visual preview render tier: {RenderCapability.Tier >> 16}; continuous storyboard groups: 4.");
             ApplyPreviewState(_previewState);
             return;
         }
