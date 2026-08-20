@@ -1,6 +1,12 @@
 name: Build Complete FaceUnlock Windows Release
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'windows/**'
+      - '.github/workflows/build-windows-release.yml'
   workflow_dispatch:
 
 jobs:
