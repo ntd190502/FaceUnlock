@@ -27,3 +27,9 @@ killed locked Shell is restarted, and Explorer started from Task Manager before 
 bound grant is consumed is terminated in that same session. FaceUnlock does not
 patch Winlogon/LSA, disable Windows security UI, or install persistent keyboard
 mappings or recovery policies. WinRE and Safe Mode remain unchanged.
+
+## Shell visual previews
+
+Run `FaceUnlockShell.exe --test --test-state <waiting|approval|bluetooth|verifying|approved|error>`
+to review the lock-screen presentation without starting the approval engine or granting
+desktop access. The preview flag is ignored outside `--test` mode.

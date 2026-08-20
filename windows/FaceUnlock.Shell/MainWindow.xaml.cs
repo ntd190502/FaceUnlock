@@ -29,8 +29,7 @@ public partial class MainWindow : Window
     {
         if (_engine.Mode == ShellMode.Test && !string.IsNullOrWhiteSpace(_previewState))
         {
-            var state = _previewState.ToLowerInvariant() switch { "bluetooth" => ShellState.WAITING_FACE_ID, "verifying" => ShellState.APPROVED, "approved" => ShellState.TEST_PASS, "error" => ShellState.ERROR, _ => ShellState.WAITING_FACE_ID };
-            UpdateUiForState(state, _previewState.Equals("bluetooth", StringComparison.OrdinalIgnoreCase) ? "Waiting for Bluetooth" : "Preview");
+            ApplyPreviewState(_previewState);
             return;
         }
         await _engine.InitializeAndAutoStartAsync();
@@ -142,6 +141,52 @@ public partial class MainWindow : Window
             });
         }
     }
+
+    // Test-only visual states never start the engine or grant access to the desktop.
+    private void ApplyPreviewState(string previewState)
+    {
+        OnlineStatus.Text = "Online";
+        BluetoothStatus.Text = "Bluetooth Ready";
+
+        switch (previewState.Trim().ToLowerInvariant())
+        {
+            case "bluetooth":
+                StatusTitle.Text = "Connecting via Bluetooth";
+                StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                StatusDetail.Text = "Keep your iPhone nearby";
+                OnlineStatus.Text = "Offline";
+                BluetoothStatus.Text = "Bluetooth Connected";
+                break;
+            case "approval":
+                StatusTitle.Text = "Waiting for approval";
+                StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                StatusDetail.Text = "Check your iPhone";
+                break;
+            case "verifying":
+                StatusTitle.Text = "Verifying approval";
+                StatusTitle.Foreground = BrushFromRgb(0xC4, 0xB5, 0xFD);
+                StatusDetail.Text = "Please keep this screen open";
+                break;
+            case "approved":
+                StatusTitle.Text = "Unlocked";
+                StatusTitle.Foreground = BrushFromRgb(0x34, 0xD3, 0x99);
+                StatusDetail.Text = "Test approval complete";
+                break;
+            case "error":
+                StatusTitle.Text = "Unable to connect";
+                StatusTitle.Foreground = BrushFromRgb(0xF8, 0x71, 0x71);
+                StatusDetail.Text = "Retrying automatically...";
+                break;
+            default:
+                StatusTitle.Text = "Waiting for iPhone";
+                StatusTitle.Foreground = BrushFromRgb(0x38, 0xBD, 0xF8);
+                StatusDetail.Text = "Connecting to your iPhone to unlock";
+                break;
+        }
+    }
+
+    private static SolidColorBrush BrushFromRgb(byte red, byte green, byte blue) =>
+        new(Color.FromRgb(red, green, blue));
 
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
