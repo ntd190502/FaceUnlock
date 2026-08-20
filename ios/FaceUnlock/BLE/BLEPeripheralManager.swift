@@ -16,7 +16,6 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     private var requestCharacteristic: CBMutableCharacteristic!
     private var responseCharacteristic: CBMutableCharacteristic!
     private var deviceCharacteristic: CBMutableCharacteristic!
-
     private var requestAssemblers: [UUID: BLEFrameAssembler] = [:]
     private var lastResponse = Data()
 
@@ -28,19 +27,26 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
 
     override init() {
         super.init()
-        manager = CBPeripheralManager(
-            delegate: self,
-            queue: nil,
-            options: [CBPeripheralManagerOptionRestoreIdentifierKey: "io.faceunlock.ble"]
-        )
+        manager = CBPeripheralManager(delegate: self, queue: nil,
+            options: [CBPeripheralManagerOptionRestoreIdentifierKey: "io.faceunlock.ble"])
     }
 
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
-        guard peripheral.state == .poweredOn else {
+        switch peripheral.state {
+        case .poweredOn:
+            stateText = "Preparing Bluetooth"
+            configureService()
+        case .poweredOff:
+            stateText = "Bluetooth Off"
+            requestAssemblers.removeAll()
+            pendingNotifications.removeAll()
+        case .unauthorized:
+            stateText = "Bluetooth Permission Required"
+        case .unsupported:
+            stateText = "Bluetooth Unsupported"
+        default:
             stateText = "Bluetooth unavailable"
-            return
         }
-        configureService()
     }
 
     private func configureService() {
@@ -48,44 +54,17 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         pendingNotifications.removeAll()
         lastResponse = Data()
 
-        requestCharacteristic = CBMutableCharacteristic(
-            type: Self.requestUUID,
-            properties: [.write],
-            value: nil,
-            permissions: [.writeable]
-        )
-        responseCharacteristic = CBMutableCharacteristic(
-            type: Self.responseUUID,
-            properties: [.read, .notify],
-            value: nil,
-            permissions: [.readable]
-        )
-        // Keep this dynamic. Pairing can complete after the BLE service was
-        // created; serving the value in didReceiveRead guarantees Windows sees
-        // the current AppConfig.deviceID without requiring an app restart.
-        deviceCharacteristic = CBMutableCharacteristic(
-            type: Self.deviceUUID,
-            properties: [.read],
-            value: nil,
-            permissions: [.readable]
-        )
+        requestCharacteristic = CBMutableCharacteristic(type: Self.requestUUID, properties: [.write], value: nil, permissions: [.writeable])
+        responseCharacteristic = CBMutableCharacteristic(type: Self.responseUUID, properties: [.read, .notify], value: nil, permissions: [.readable])
+        deviceCharacteristic = CBMutableCharacteristic(type: Self.deviceUUID, properties: [.read], value: nil, permissions: [.readable])
 
         let service = CBMutableService(type: Self.serviceUUID, primary: true)
-        service.characteristics = [
-            requestCharacteristic,
-            responseCharacteristic,
-            deviceCharacteristic
-        ]
-
+        service.characteristics = [requestCharacteristic, responseCharacteristic, deviceCharacteristic]
         manager.removeAllServices()
         manager.add(service)
     }
 
-    func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        didAdd service: CBService,
-        error: Error?
-    ) {
+    func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
         guard error == nil else {
             stateText = error!.localizedDescription
             return
@@ -94,29 +73,23 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     func startAdvertising() {
-        guard manager.state == .poweredOn else { return }
-
-        if manager.isAdvertising {
-            manager.stopAdvertising()
+        guard manager.state == .poweredOn else {
+            stateText = "Bluetooth unavailable"
+            return
         }
-
+        if manager.isAdvertising { manager.stopAdvertising() }
         manager.startAdvertising([
             CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
             CBAdvertisementDataLocalNameKey: "FaceUnlock"
         ])
-        stateText = "Advertising"
+        stateText = "Bluetooth Ready"
     }
 
-    func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        didReceiveRead request: CBATTRequest
-    ) {
+    func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
         let value: Data
         switch request.characteristic.uuid {
-        case Self.deviceUUID:
-            value = currentDeviceIDData()
-        case Self.responseUUID:
-            value = lastResponse
+        case Self.deviceUUID: value = currentDeviceIDData()
+        case Self.responseUUID: value = lastResponse
         default:
             peripheral.respond(to: request, withResult: .attributeNotFound)
             return
@@ -126,33 +99,33 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             peripheral.respond(to: request, withResult: .invalidOffset)
             return
         }
-
         request.value = value.subdata(in: request.offset..<value.count)
         peripheral.respond(to: request, withResult: .success)
     }
 
-    func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        didReceiveWrite requests: [CBATTRequest]
-    ) {
+    func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
         for req in requests where req.characteristic.uuid == Self.requestUUID {
             guard let data = req.value, !data.isEmpty else {
                 peripheral.respond(to: req, withResult: .invalidAttributeValueLength)
                 continue
             }
 
-            let assembler = requestAssembler(for: req.central.identifier)
+            let centralID = req.central.identifier
+            let assembler = requestAssembler(for: centralID)
             switch assembler.ingest(data, expectedKind: .request) {
             case .waiting:
                 peripheral.respond(to: req, withResult: .success)
 
             case .invalid:
+                requestAssemblers.removeValue(forKey: centralID)
                 peripheral.respond(to: req, withResult: .invalidPdu)
 
             case .complete(let requestData, let framed):
+                // A completed transaction must not leak framing state into the
+                // next request from the same Windows central.
+                requestAssemblers.removeValue(forKey: centralID)
                 peripheral.respond(to: req, withResult: .success)
                 let central = req.central
-
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     do {
@@ -173,26 +146,18 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         flushNotificationQueue()
     }
 
-    func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        central: CBCentral,
-        didUnsubscribeFrom characteristic: CBCharacteristic
-    ) {
+    func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         requestAssemblers.removeValue(forKey: central.identifier)
         pendingNotifications.removeAll { $0.central?.identifier == central.identifier }
     }
 
-    func peripheralManager(
-        _ peripheral: CBPeripheralManager,
-        willRestoreState dict: [String: Any]
-    ) {
-        stateText = "Restored"
+    func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String: Any]) {
+        stateText = peripheral.state == .poweredOn ? "Bluetooth Restored" : "Restoring Bluetooth"
+        if peripheral.state == .poweredOn { configureService() }
     }
 
     private func requestAssembler(for centralID: UUID) -> BLEFrameAssembler {
-        if let existing = requestAssemblers[centralID] {
-            return existing
-        }
+        if let existing = requestAssemblers[centralID] { return existing }
         let assembler = BLEFrameAssembler()
         requestAssemblers[centralID] = assembler
         return assembler
@@ -201,48 +166,25 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     private func enqueueResponse(_ response: Data, central: CBCentral?, framed: Bool) {
         if framed {
             do {
-                // iOS reports the negotiated notification payload size. Cap it
-                // so both sides stay inside a predictable application envelope.
                 let maxUpdate = central?.maximumUpdateValueLength ?? BLEFrameCodec.minimumFrameSize
                 let frameBytes = min(max(BLEFrameCodec.minimumFrameSize, maxUpdate), 180)
-                let frames = try BLEFrameCodec.encode(
-                    response,
-                    kind: .response,
-                    maximumFrameBytes: frameBytes
-                )
-                pendingNotifications.append(
-                    contentsOf: frames.map { PendingNotification(data: $0, central: central) }
-                )
+                let frames = try BLEFrameCodec.encode(response, kind: .response, maximumFrameBytes: frameBytes)
+                pendingNotifications.append(contentsOf: frames.map { PendingNotification(data: $0, central: central) })
             } catch {
-                // An encoding failure should still produce a small legacy error
-                // rather than silently dropping the BLE transaction.
-                pendingNotifications.append(
-                    PendingNotification(data: makeErrorResponse(error), central: central)
-                )
+                pendingNotifications.append(PendingNotification(data: makeErrorResponse(error), central: central))
             }
         } else {
-            // Backward compatibility for a pre-framing Windows client.
             pendingNotifications.append(PendingNotification(data: response, central: central))
         }
-
         flushNotificationQueue()
     }
 
     private func flushNotificationQueue() {
         guard responseCharacteristic != nil else { return }
-
         while let next = pendingNotifications.first {
             let centrals: [CBCentral]? = next.central.map { [$0] }
-            let accepted = manager.updateValue(
-                next.data,
-                for: responseCharacteristic,
-                onSubscribedCentrals: centrals
-            )
-            if !accepted {
-                // CoreBluetooth calls peripheralManagerIsReady when its transmit
-                // queue has room again; do not discard unsent response frames.
-                return
-            }
+            let accepted = manager.updateValue(next.data, for: responseCharacteristic, onSubscribedCentrals: centrals)
+            if !accepted { return }
             pendingNotifications.removeFirst()
         }
     }
@@ -252,11 +194,7 @@ final class BLEPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     private func makeErrorResponse(_ error: Error) -> Data {
-        struct BLEErrorResponse: Encodable {
-            let ok: String
-            let error: String
-        }
-
+        struct BLEErrorResponse: Encodable { let ok: String; let error: String }
         let message = String(error.localizedDescription.prefix(512))
         return (try? JSONEncoder().encode(BLEErrorResponse(ok: "false", error: message)))
             ?? Data(#"{"ok":"false","error":"BLE error"}"#.utf8)
