@@ -104,6 +104,7 @@ $phaseEColor  = if ($hasPhaseE) { "Red" } else { "Green" }
 Write-Host "LSA Phase E:      $phaseEStatus" -ForegroundColor $phaseEColor
 
 # 8. Security Level
-Write-Host "Security level:   STANDARD POST-LOGON SHELL GATE" -ForegroundColor Cyan
-Write-Host "Notice:           User with administrative/recovery access may bypass the post-logon shell gate." -ForegroundColor Gray
+Write-Host "Security level:   PHASE F.2 MANDATORY PER-SESSION SHELL GATE" -ForegroundColor Cyan
+Write-Host "Watchdog:         Active when paired + Shell Gate enabled + interactive session." -ForegroundColor Cyan
+Write-Host "Notice:           Ctrl+Alt+Del, WinRE, Safe Mode, and offline Windows recovery remain available." -ForegroundColor Gray
 Write-Host "============================================================" -ForegroundColor Cyan

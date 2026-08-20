@@ -56,7 +56,7 @@ public partial class MainWindow : Window
             case ShellState.SERVICE_UNAVAILABLE:
                 StatusTitle.Text = "Service Unavailable";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
-                StatusDetail.Text = "FaceUnlock background service is not running. Please start the service or use Recovery.";
+                StatusDetail.Text = "FaceUnlock background service is not running. The desktop remains locked until the service is restored.";
                 BtnTryAgain.Visibility = Visibility.Visible;
                 break;
 
@@ -104,7 +104,7 @@ public partial class MainWindow : Window
             case ShellState.INPUT_GUARD_FAILED:
                 StatusTitle.Text = "Input Guard Failed";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71));
-                StatusDetail.Text = $"Shell Gate remains locked because keyboard lockdown failed. {message} Use Recovery.";
+                StatusDetail.Text = $"Shell Gate remains locked because keyboard lockdown failed. {message}";
                 break;
 
             case ShellState.STARTING_DESKTOP:
@@ -155,17 +155,6 @@ public partial class MainWindow : Window
     {
         BtnRetryDesktop.Visibility = Visibility.Collapsed;
         _engine.RetryExplorerSafe();
-    }
-
-    private void BtnRecovery_Click(object sender, RoutedEventArgs e)
-    {
-        _engine.CancelFaceIdAttempt();
-        RecoveryModal.Visibility = Visibility.Visible;
-    }
-
-    private void BtnDismissRecovery_Click(object sender, RoutedEventArgs e)
-    {
-        RecoveryModal.Visibility = Visibility.Collapsed;
     }
 
     private void BtnExitTest_Click(object sender, RoutedEventArgs e)

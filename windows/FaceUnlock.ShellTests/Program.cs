@@ -62,6 +62,70 @@ public sealed class FakeShellInputGuard : IShellInputGuard
     public void Dispose() => IsActive = false;
 }
 
+public sealed class FakeShellGateSystem : IShellGateSystem
+{
+    public bool IsMachinePaired { get; set; } = true;
+    public List<InteractiveGateSession> Sessions { get; } = new();
+    public Dictionary<int, List<SessionProcess>> Shells { get; } = new();
+    public Dictionary<int, List<SessionProcess>> Explorers { get; } = new();
+    public List<SessionProcess> Terminated { get; } = new();
+    public int LaunchCount { get; private set; }
+    public int NextShellProcessId { get; set; } = 9000;
+    public bool LaunchSucceeds { get; set; } = true;
+    public Action? BeforeExplorerQuery { get; set; }
+
+    public IReadOnlyList<InteractiveGateSession> GetInteractiveSessions() => Sessions;
+    public IReadOnlyList<SessionProcess> GetShellProcesses(int sessionId) => Shells.TryGetValue(sessionId, out var value) ? value : [];
+    public IReadOnlyList<SessionProcess> GetExplorerProcesses(int sessionId)
+    {
+        var callback = BeforeExplorerQuery;
+        BeforeExplorerQuery = null;
+        callback?.Invoke();
+        return Explorers.TryGetValue(sessionId, out var value) ? value : [];
+    }
+    public bool IsProcessAlive(int processId, int sessionId, string processName) =>
+        GetShellProcesses(sessionId).Any(process => process.ProcessId == processId);
+    public bool IsTrustedShellProcess(int processId, int sessionId) =>
+        GetShellProcesses(sessionId).Any(process => process.ProcessId == processId);
+
+    public bool TryLaunchShell(InteractiveGateSession session, out int processId, out string? errorMessage)
+    {
+        LaunchCount++;
+        processId = NextShellProcessId++;
+        errorMessage = LaunchSucceeds ? null : "Simulated launch failure";
+        if (LaunchSucceeds)
+        {
+            Shells[session.SessionId] = [new SessionProcess(processId, session.SessionId)];
+        }
+        return LaunchSucceeds;
+    }
+
+    public bool TryTerminateProcess(SessionProcess process, string expectedProcessName, out string? errorMessage)
+    {
+        errorMessage = null;
+        Terminated.Add(process);
+        if (expectedProcessName.Equals("FaceUnlockShell", StringComparison.OrdinalIgnoreCase)
+            && Shells.TryGetValue(process.SessionId, out var shells)) shells.RemoveAll(item => item.ProcessId == process.ProcessId);
+        if (expectedProcessName.Equals("explorer", StringComparison.OrdinalIgnoreCase)
+            && Explorers.TryGetValue(process.SessionId, out var explorers)) explorers.RemoveAll(item => item.ProcessId == process.ProcessId);
+        return true;
+    }
+}
+
+public sealed class TestShellClientAuthorizer : IShellClientAuthorizer
+{
+    public bool IsTrustedShellClient(int clientProcessId, LocalAuthRequest request, out string? errorMessage)
+    {
+        errorMessage = null;
+        return true;
+    }
+}
+
+public sealed class TestNoOpWatchdog : IShellGateWatchdog
+{
+    public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
 public class Program
 {
     public static async Task<int> Main(string[] args)
@@ -88,6 +152,92 @@ public class Program
         }
 
         var customLog = Path.Combine(Path.GetTempPath(), $"shell_test_{Guid.NewGuid():N}.log");
+
+        // =========================================================================
+        // F.2 SERVICE GATE AUTHORITY AND WATCHDOG POLICY
+        // =========================================================================
+        Console.WriteLine("\n[F.2 WATCHDOG] Per-session mandatory Shell and Explorer policy");
+        var restartedServiceAuthority = new SessionGateAuthority();
+        Check(!restartedServiceAuthority.GetSnapshot(40, "S-1-5-21-RESTART").ExplorerAllowed,
+            "F.2: Service restart/unknown session defaults LOCKED");
+        var watchdogAuthority = new SessionGateAuthority();
+        var watchdogSystem = new FakeShellGateSystem();
+        var watchdogSession = new InteractiveGateSession(41, "S-1-5-21-WATCHDOG", true);
+        watchdogSystem.Sessions.Add(watchdogSession);
+        var invalidatedRequests = new List<string>();
+        var watchdog = new ShellGateWatchdog(watchdogAuthority, watchdogSystem, invalidatedRequests.Add, _ => { });
+
+        watchdog.Tick();
+        Check(watchdogSystem.LaunchCount == 1, "F.2: LOCKED + Shell missing requests restart");
+        watchdog.Tick();
+        Check(watchdogSystem.LaunchCount == 1, "F.2: LOCKED + Shell alive does not restart again");
+
+        var firstShellPid = watchdogSystem.Shells[41].Single().ProcessId;
+        Check(watchdogAuthority.TryBeginShellRequest(41, watchdogSession.UserSid, firstShellPid, "old-request", out _), "F.2: Initial Shell request registered");
+        watchdogSystem.Shells[41].Clear();
+        watchdog.Tick();
+        Check(invalidatedRequests.Contains("old-request"), "F.2: End Task invalidates old Shell request");
+        Check(watchdogSystem.LaunchCount == 2, "F.2: End Task auto-restarts Shell");
+        Check(!watchdogAuthority.TryAuthorizeConsumedGrant("old-request", watchdogSession.UserSid, 41, firstShellPid), "F.2: Old approval cannot unlock restarted Shell");
+
+        var restartedPid = watchdogSystem.Shells[41].Single().ProcessId;
+        Check(watchdogAuthority.TryBeginShellRequest(41, watchdogSession.UserSid, restartedPid, "new-request", out _), "F.2: Restarted Shell creates new request binding");
+        watchdogSystem.Explorers[41] = [new SessionProcess(7001, 41), new SessionProcess(7002, 99)];
+        watchdog.Tick();
+        Check(watchdogSystem.Terminated.Any(process => process.ProcessId == 7001), "F.2: LOCKED unauthorized Explorer terminated");
+        Check(!watchdogSystem.Terminated.Any(process => process.ProcessId == 7002), "F.2: Wrong-session Explorer untouched");
+
+        Check(!watchdogAuthority.TryAuthorizeConsumedGrant("wrong-request", watchdogSession.UserSid, 41, restartedPid), "F.2: Wrong request_id cannot authorize desktop");
+        Check(!watchdogAuthority.TryAuthorizeConsumedGrant("new-request", "S-1-5-21-WRONG", 41, restartedPid), "F.2: Wrong SID cannot authorize desktop");
+        Check(!watchdogAuthority.TryAuthorizeConsumedGrant("new-request", watchdogSession.UserSid, 42, restartedPid), "F.2: Wrong session cannot authorize desktop");
+        Check(!watchdogAuthority.GetSnapshot(41, watchdogSession.UserSid).ExplorerAllowed, "F.2: Reserved/not-consumed state does not allow Explorer");
+        Check(watchdogAuthority.TryAuthorizeConsumedGrant("new-request", watchdogSession.UserSid, 41, restartedPid), "F.2: Valid consumed-grant binding authorizes exact session");
+        watchdogSystem.Explorers[41] = [new SessionProcess(7003, 41)];
+        watchdogSystem.Shells[41].Clear();
+        watchdog.Tick();
+        Check(watchdogSystem.LaunchCount == 2, "F.2: UNLOCKED + Shell exits does not restart");
+        Check(!watchdogSystem.Terminated.Any(process => process.ProcessId == 7003), "F.2: UNLOCKED Explorer allowed");
+        Check(!watchdogAuthority.TryAuthorizeConsumedGrant("new-request", watchdogSession.UserSid, 41, restartedPid), "F.2: Authorization replay rejected");
+
+        var relogonPid = restartedPid + 100;
+        watchdogSystem.Shells[41] = [new SessionProcess(relogonPid, 41)];
+        watchdogSystem.Explorers[41].Clear();
+        watchdog.Tick();
+        Check(!watchdogAuthority.GetSnapshot(41, watchdogSession.UserSid).ExplorerAllowed,
+            "F.2: New Shell/logon cycle resets reused SID/session to LOCKED");
+
+        var duplicateAuthority = new SessionGateAuthority();
+        var duplicateSystem = new FakeShellGateSystem();
+        duplicateSystem.Sessions.Add(new InteractiveGateSession(52, "S-1-5-21-DUP", true));
+        duplicateSystem.Shells[52] = [new SessionProcess(5201, 52), new SessionProcess(5202, 52)];
+        var duplicateWatchdog = new ShellGateWatchdog(duplicateAuthority, duplicateSystem, _ => { }, _ => { });
+        duplicateWatchdog.Tick();
+        Check(duplicateSystem.Shells[52].Count == 1 && duplicateSystem.Shells[52][0].ProcessId == 5201, "F.2: Duplicate Shell reduced to canonical instance");
+
+        var safeTestSystem = new FakeShellGateSystem();
+        safeTestSystem.Sessions.Add(new InteractiveGateSession(61, "S-1-5-21-TEST", false));
+        safeTestSystem.Explorers[61] = [new SessionProcess(6101, 61)];
+        new ShellGateWatchdog(new SessionGateAuthority(), safeTestSystem, _ => { }, _ => { }).Tick();
+        Check(safeTestSystem.LaunchCount == 0 && safeTestSystem.Terminated.Count == 0, "F.2: Test/disabled Shell Gate never alters real Explorer");
+
+        var clientSystem = new FakeShellGateSystem();
+        clientSystem.Shells[71] = [new SessionProcess(7101, 71)];
+        var clientAuthorizer = new WindowsShellClientAuthorizer(clientSystem);
+        Check(clientAuthorizer.IsTrustedShellClient(7101, new LocalAuthRequest(1, "consume_grant", "client-ok", session_id: 71, client_type: "shell", process_id: 7101), out _), "F.2: Canonical Shell PID/session accepted for mutation");
+        Check(!clientAuthorizer.IsTrustedShellClient(7102, new LocalAuthRequest(1, "consume_grant", "client-spoof", session_id: 71, client_type: "shell", process_id: 7101), out _), "F.2: Named-pipe client PID spoof rejected");
+
+        var raceAuthority = new SessionGateAuthority();
+        var raceSystem = new FakeShellGateSystem();
+        const string raceSid = "S-1-5-21-RACE";
+        raceSystem.Sessions.Add(new InteractiveGateSession(81, raceSid, true));
+        raceSystem.Shells[81] = [new SessionProcess(8101, 81)];
+        raceSystem.Explorers[81] = [new SessionProcess(8102, 81)];
+        raceAuthority.ObserveLockedSession(81, raceSid);
+        raceAuthority.TryRegisterShellProcess(81, raceSid, 8101, out _);
+        raceAuthority.TryBeginShellRequest(81, raceSid, 8101, "race-request", out _);
+        raceSystem.BeforeExplorerQuery = () => raceAuthority.TryAuthorizeConsumedGrant("race-request", raceSid, 81, 8101);
+        new ShellGateWatchdog(raceAuthority, raceSystem, _ => { }, _ => { }).Tick();
+        Check(!raceSystem.Terminated.Any(process => process.ProcessId == 8102), "F.2: Consume/Explorer race rechecks UNLOCKED before termination");
 
         // =========================================================================
         // INPUT POLICY: common user-mode Shell Gate escape shortcuts
@@ -178,7 +328,8 @@ public class Program
         // Setup real local test service instance for remaining tests
         var testPipe = "FaceUnlock.ShellTest." + Guid.NewGuid().ToString("N");
         var serviceCts = new CancellationTokenSource();
-        var worker = new UnlockWorker(NullLogger<UnlockWorker>.Instance, testPipe);
+        var serviceGateAuthority = new SessionGateAuthority();
+        var worker = new UnlockWorker(NullLogger<UnlockWorker>.Instance, testPipe, serviceGateAuthority, new TestShellClientAuthorizer(), new TestNoOpWatchdog());
         var serviceTask = worker.StartAsync(serviceCts.Token);
         await Task.Delay(400);
 
@@ -186,6 +337,14 @@ public class Program
         {
             var userSid = ShellEngine.GetCurrentWindowsUserSid() ?? "S-1-5-21-12345-67890";
             var session = ShellEngine.GetCurrentWindowsSessionId();
+            var clientProcessId = Environment.ProcessId;
+
+            void RegisterShellRequest(string requestId, string sid, int targetSession)
+            {
+                serviceGateAuthority.ObserveLockedSession(targetSession, sid);
+                serviceGateAuthority.TryRegisterShellProcess(targetSession, sid, clientProcessId, out _);
+                serviceGateAuthority.TryBeginShellRequest(targetSession, sid, clientProcessId, requestId, out _);
+            }
 
             // =========================================================================
             // TEST 2: Not Paired -> Explorer NOT launched
@@ -233,9 +392,11 @@ public class Program
             var launcher6 = new MockExplorerLauncher();
             var engine6 = new ShellEngine(ShellMode.Shell, pipeName: testPipe, launcher: launcher6, customLogFile: customLog, inputGuard: new FakeShellInputGuard());
             var reqId6 = Guid.NewGuid().ToString("N");
+            var session6 = session + 6;
+            RegisterShellRequest(reqId6, userSid, session6);
             // Inject with wrong SID so reserve_grant fails
-            worker.InjectApprovedGrantForTesting(reqId6, "S-1-5-21-DIFFERENT-SID", "TEST\\User6", "device-001", DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30, sessionId: session, clientType: "shell");
-            var reserveResp6 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId6, user_sid: userSid, session_id: session, client_type: "shell"));
+            worker.InjectApprovedGrantForTesting(reqId6, "S-1-5-21-DIFFERENT-SID", "TEST\\User6", "device-001", DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30, sessionId: session6, clientType: "shell");
+            var reserveResp6 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId6, user_sid: userSid, session_id: session6, client_type: "shell", process_id: clientProcessId));
             Check(reserveResp6 != null && reserveResp6.status == LocalAuthStatus.Rejected, "TEST 6: Reserve rejected due to mismatch");
             Check(launcher6.StartProcessCount == 0, "TEST 6: Explorer not launched");
 
@@ -246,14 +407,16 @@ public class Program
             var launcher7 = new MockExplorerLauncher();
             var reqId7 = Guid.NewGuid().ToString("N");
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            worker.InjectApprovedGrantForTesting(reqId7, userSid, "TEST\\User7", "device-001", nowSec + 30, sessionId: session, clientType: "shell");
+            var session7 = session + 7;
+            RegisterShellRequest(reqId7, userSid, session7);
+            worker.InjectApprovedGrantForTesting(reqId7, userSid, "TEST\\User7", "device-001", nowSec + 30, sessionId: session7, clientType: "shell");
             
             // Reserve passes
-            var res7 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId7, user_sid: userSid, session_id: session, client_type: "shell"));
+            var res7 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId7, user_sid: userSid, session_id: session7, client_type: "shell", process_id: clientProcessId));
             Check(res7 != null && res7.status == LocalAuthStatus.Reserved, "TEST 7: Reserve passed");
 
             // Consume fails due to wrong session
-            var con7 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId7, user_sid: userSid, session_id: 9999, client_type: "shell"));
+            var con7 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId7, user_sid: userSid, session_id: 9999, client_type: "shell", process_id: clientProcessId));
             Check(con7 != null && con7.status == LocalAuthStatus.Rejected, "TEST 7: Consume failed as expected");
             Check(launcher7.StartProcessCount == 0, "TEST 7: Explorer NOT launched");
 
@@ -265,10 +428,12 @@ public class Program
             var guard8 = new FakeShellInputGuard();
             var engine8 = new ShellEngine(ShellMode.Shell, pipeName: testPipe, launcher: launcher8, customLogFile: customLog, inputGuard: guard8);
             var reqId8 = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqId8, userSid, "TEST\\User8", "device-001", nowSec + 30, sessionId: session, clientType: "shell");
+            var session8 = session + 8;
+            RegisterShellRequest(reqId8, userSid, session8);
+            worker.InjectApprovedGrantForTesting(reqId8, userSid, "TEST\\User8", "device-001", nowSec + 30, sessionId: session8, clientType: "shell");
 
-            var res8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId8, user_sid: userSid, session_id: session, client_type: "shell"));
-            var con8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId8, user_sid: userSid, session_id: session, client_type: "shell"));
+            var res8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId8, user_sid: userSid, session_id: session8, client_type: "shell", process_id: clientProcessId));
+            var con8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId8, user_sid: userSid, session_id: session8, client_type: "shell", process_id: clientProcessId));
             Check(con8 != null && con8.status == LocalAuthStatus.Consumed, "TEST 8: Grant consumed");
             
             guard8.TryInstall(out _);
@@ -307,8 +472,10 @@ public class Program
             // =========================================================================
             Console.WriteLine("\n[TEST 11] Wrong SID -> rejected");
             var reqId11 = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqId11, "S-1-5-21-LEGIT-SID", "TEST\\User11", "device-001", nowSec + 30, sessionId: session, clientType: "shell");
-            var res11 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId11, user_sid: "S-1-5-21-ATTACKER-SID", session_id: session, client_type: "shell"));
+            var session11 = session + 11;
+            RegisterShellRequest(reqId11, "S-1-5-21-LEGIT-SID", session11);
+            worker.InjectApprovedGrantForTesting(reqId11, "S-1-5-21-LEGIT-SID", "TEST\\User11", "device-001", nowSec + 30, sessionId: session11, clientType: "shell");
+            var res11 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId11, user_sid: "S-1-5-21-ATTACKER-SID", session_id: session11, client_type: "shell", process_id: clientProcessId));
             Check(res11 != null && res11.status == LocalAuthStatus.Rejected, "TEST 11: Wrong SID consume rejected", $"status={res11?.status}");
 
             // =========================================================================
@@ -316,8 +483,10 @@ public class Program
             // =========================================================================
             Console.WriteLine("\n[TEST 12] Wrong Windows Session ID -> rejected");
             var reqId12 = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqId12, userSid, "TEST\\User12", "device-001", nowSec + 30, sessionId: session, clientType: "shell");
-            var res12 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId12, user_sid: userSid, session_id: session + 999, client_type: "shell"));
+            var session12 = session + 12;
+            RegisterShellRequest(reqId12, userSid, session12);
+            worker.InjectApprovedGrantForTesting(reqId12, userSid, "TEST\\User12", "device-001", nowSec + 30, sessionId: session12, clientType: "shell");
+            var res12 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId12, user_sid: userSid, session_id: session12 + 999, client_type: "shell", process_id: clientProcessId));
             Check(res12 != null && res12.status == LocalAuthStatus.Rejected, "TEST 12: Wrong Session ID consume rejected", $"status={res12?.status}");
 
             // =========================================================================
@@ -325,8 +494,10 @@ public class Program
             // =========================================================================
             Console.WriteLine("\n[TEST 13] Expired grant -> rejected");
             var reqId13 = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqId13, userSid, "TEST\\User13", "device-001", nowSec - 10, sessionId: session, clientType: "shell");
-            var res13 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId13, user_sid: userSid, session_id: session, client_type: "shell"));
+            var session13 = session + 13;
+            RegisterShellRequest(reqId13, userSid, session13);
+            worker.InjectApprovedGrantForTesting(reqId13, userSid, "TEST\\User13", "device-001", nowSec - 10, sessionId: session13, clientType: "shell");
+            var res13 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId13, user_sid: userSid, session_id: session13, client_type: "shell", process_id: clientProcessId));
             Check(res13 != null && (res13.status == LocalAuthStatus.Expired || res13.status == LocalAuthStatus.NotFound), "TEST 13: Expired grant rejected", $"status={res13?.status}");
 
             // =========================================================================
@@ -334,10 +505,14 @@ public class Program
             // =========================================================================
             Console.WriteLine("\n[TEST 14] Replayed grant -> rejected");
             var reqId14 = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqId14, userSid, "TEST\\User14", "device-001", nowSec + 30, sessionId: session, clientType: "shell");
-            var res14a = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId14, user_sid: userSid, session_id: session, client_type: "shell"));
+            var session14 = session + 14;
+            RegisterShellRequest(reqId14, userSid, session14);
+            worker.InjectApprovedGrantForTesting(reqId14, userSid, "TEST\\User14", "device-001", nowSec + 30, sessionId: session14, clientType: "shell");
+            var reserve14 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));
+            Check(reserve14 != null && reserve14.status == LocalAuthStatus.Reserved, "TEST 14: Reserve PASS");
+            var res14a = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));
             Check(res14a != null && res14a.status == LocalAuthStatus.Consumed, "TEST 14: First consume PASS");
-            var res14b = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId14, user_sid: userSid, session_id: session, client_type: "shell"));
+            var res14b = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));
             Check(res14b != null && (res14b.status == LocalAuthStatus.NotFound || res14b.status == LocalAuthStatus.Rejected), "TEST 14: Second consume (replay) REJECTED", $"status={res14b?.status}");
 
             // =========================================================================
@@ -346,7 +521,7 @@ public class Program
             Console.WriteLine("\n[TEST 15] Shell restart -> old consumed grant cannot unlock");
             var launcher15 = new MockExplorerLauncher();
             var engine15 = new ShellEngine(ShellMode.Shell, pipeName: testPipe, launcher: launcher15, customLogFile: customLog, inputGuard: new FakeShellInputGuard());
-            var res15 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId14, user_sid: userSid, session_id: session, client_type: "shell"));
+            var res15 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));
             Check(res15 != null && (res15.status == LocalAuthStatus.NotFound || res15.status == LocalAuthStatus.Rejected), "TEST 15: Old grant cannot be reserved on new shell instance");
             Check(launcher15.StartProcessCount == 0, "TEST 15: Explorer NOT launched on restarted shell with stale grant");
         }

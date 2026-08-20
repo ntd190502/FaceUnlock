@@ -82,3 +82,13 @@
 - iOS GitHub Actions build generates an IPA from current sources.
 - Static checks confirm no runtime `PushManager`, `ApnsClient`, `aps-environment`, or `remote-notification` references remain.
 - Static checks confirm BLE framing codec exists on both iOS and Windows.
+
+## K. Phase F.2 Mandatory Shell Watchdog
+
+- With an eligible session `LOCKED`, remove the modeled Shell process and verify the watchdog requests one restart with backoff and invalidates the old request ID.
+- Verify the restarted Shell must register a new request; the old request/grant cannot authorize the desktop.
+- Inject Explorer in the locked target session and verify termination is requested. Inject Explorer with another Session ID and verify it is untouched.
+- Consume a reserved, approved grant with exact request ID, SID, session and canonical Shell PID; verify the Service changes only that session to `UNLOCKED` before returning `consumed`.
+- Verify wrong SID/session/request, approved-but-not-reserved grants, old grants and replay cannot authorize Explorer.
+- Verify an unlocked session neither restarts an exited Shell nor terminates Explorer.
+- Verify duplicate Shell processes retain one canonical instance and Test Mode/disabled Shell Gate never touches the user's Explorer.

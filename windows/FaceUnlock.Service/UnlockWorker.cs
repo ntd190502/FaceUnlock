@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.InteropServices;
 using FaceUnlock.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -13,7 +14,7 @@ namespace FaceUnlock.Service;
 public sealed class UnlockWorker : BackgroundService
 {
     private readonly string _pipeName;
-    private const string ServiceVersion = "1.3.0";
+    private const string ServiceVersion = "1.4.0";
     private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
 
     private readonly ILogger<UnlockWorker> _log;
@@ -23,16 +24,17 @@ public sealed class UnlockWorker : BackgroundService
     private readonly BleScanner _bleScanner;
     private readonly IBluetoothRadioManager _bluetoothRadioManager;
     private readonly WindowsInternetMonitor _internetMonitor;
-    private readonly SemaphoreSlim _authLock = new(1, 1);
+    private readonly SessionGateAuthority _gateAuthority;
+    private readonly IShellClientAuthorizer _shellClientAuthorizer;
+    private readonly IShellGateWatchdog _shellGateWatchdog;
     private readonly string _logDir;
     private readonly string _serviceLogFile;
     private readonly string _serviceLogBackupFile;
 
     // Active auth session tracking for cancel_request
     private readonly object _sessionSync = new();
-    private string? _currentActiveRequestId;
-    private string? _currentActiveIdentity;
-    private CancellationTokenSource? _currentActiveCts;
+    private sealed record ActiveAuthRequest(string Identity, CancellationTokenSource Cancellation);
+    private readonly Dictionary<string, ActiveAuthRequest> _activeAuthRequests = new(StringComparer.Ordinal);
 
     private enum GrantState
     {
@@ -66,7 +68,12 @@ public sealed class UnlockWorker : BackgroundService
     // In-memory grant cache: requestId -> AuthGrant
     private readonly Dictionary<string, AuthGrant> _activeGrants = new();
 
-    public UnlockWorker(ILogger<UnlockWorker> log, string pipeName = "FaceUnlock.Auth.v1")
+    public UnlockWorker(
+        ILogger<UnlockWorker> log,
+        string pipeName = "FaceUnlock.Auth.v1",
+        SessionGateAuthority? gateAuthority = null,
+        IShellClientAuthorizer? shellClientAuthorizer = null,
+        IShellGateWatchdog? shellGateWatchdog = null)
     {
         _log = log;
         _pipeName = pipeName;
@@ -81,6 +88,15 @@ public sealed class UnlockWorker : BackgroundService
         _logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "logs");
         _serviceLogFile = Path.Combine(_logDir, "service.log");
         _serviceLogBackupFile = Path.Combine(_logDir, "service.log.1");
+
+        _gateAuthority = gateAuthority ?? new SessionGateAuthority();
+        var gateSystem = new WindowsShellGateSystem(() => _configStore.GetPairingState().IsPaired);
+        _shellClientAuthorizer = shellClientAuthorizer ?? new WindowsShellClientAuthorizer(gateSystem);
+        _shellGateWatchdog = shellGateWatchdog ?? new ShellGateWatchdog(
+            _gateAuthority,
+            gateSystem,
+            InvalidateWatchdogRequest,
+            AppendServiceLog);
 
         try
         {
@@ -132,6 +148,7 @@ public sealed class UnlockWorker : BackgroundService
     {
         _log.LogInformation("FaceUnlock Local Authentication Broker Service starting (v{Version})...", ServiceVersion);
         AppendServiceLog($"FaceUnlock Service v{ServiceVersion} started. Listening on named pipe: FaceUnlock.Auth.v1");
+        var watchdogTask = _shellGateWatchdog.RunAsync(stoppingToken);
 
         // 1. Initialize and ensure LSA machine secret is present for passwordless authentication
         try
@@ -199,6 +216,7 @@ public sealed class UnlockWorker : BackgroundService
 
         _log.LogInformation("FaceUnlock Service stopped.");
         AppendServiceLog("FaceUnlock Service stopped.");
+        try { await watchdogTask; } catch (OperationCanceledException) { }
     }
 
     private static PipeSecurity CreatePipeSecurity()
@@ -264,7 +282,17 @@ public sealed class UnlockWorker : BackgroundService
                 }
 
                 currentReqId = request.request_id;
+                var clientProcessId = GetClientProcessId(pipe);
                 AppendServiceLog($"[REQUEST RECEIVED] command={request.command} request_id={currentReqId ?? "(none)"} user_sid={request.user_sid ?? "(none)"} qualified_username={request.qualified_username ?? request.username ?? "(none)"}");
+
+                if (string.Equals(request.client_type, "shell", StringComparison.OrdinalIgnoreCase)
+                    && IsShellMutation(request.command)
+                    && !_shellClientAuthorizer.IsTrustedShellClient(clientProcessId, request, out var shellClientError))
+                {
+                    AppendServiceLog($"[SHELL CLIENT REJECTED] command={request.command} request_id={request.request_id} pid={clientProcessId} reason={shellClientError}");
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new LocalAuthResponse(1, request.request_id, LocalAuthStatus.Rejected, "Untrusted Shell client")));
+                    return;
+                }
 
                 // Handle ping command (health check)
                 if (request.command == "ping")
@@ -296,7 +324,7 @@ public sealed class UnlockWorker : BackgroundService
                 // Handle grant lifecycle commands
                 if (request.command == "reserve_grant")
                 {
-                    var reserveResp = ReserveGrant(request);
+                    var reserveResp = ReserveGrant(request, clientProcessId);
                     opName = "WRITE_RESERVE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(reserveResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     AppendServiceLog($"[ACK WRITTEN] reserve_grant request_id={request.request_id} status={reserveResp.status}");
@@ -305,7 +333,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (request.command == "release_grant")
                 {
-                    var releaseResp = ReleaseGrant(request);
+                    var releaseResp = ReleaseGrant(request, clientProcessId);
                     opName = "WRITE_RELEASE";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(releaseResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     AppendServiceLog($"[ACK WRITTEN] release_grant request_id={request.request_id} status={releaseResp.status}");
@@ -314,7 +342,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (request.command == "consume_grant")
                 {
-                    var consumeResp = ConsumeGrant(request);
+                    var consumeResp = ConsumeGrant(request, clientProcessId);
                     opName = "WRITE_CONSUME";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(consumeResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     AppendServiceLog($"[ACK WRITTEN] consume_grant request_id={request.request_id} status={consumeResp.status}");
@@ -341,7 +369,7 @@ public sealed class UnlockWorker : BackgroundService
                 if (request.command == "request_unlock")
                 {
                     // Start auth in background task (or queue) and respond with ACK immediately
-                    var ackResp = StartAuthRequest(request, stoppingToken);
+                    var ackResp = StartAuthRequest(request, clientProcessId, stoppingToken);
                     opName = "WRITE_REQUEST_UNLOCK_ACK";
                     await writer.WriteLineAsync(JsonSerializer.Serialize(ackResp, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                     AppendServiceLog($"[ACK WRITTEN] request_unlock request_id={request.request_id} status={ackResp.status}");
@@ -384,15 +412,16 @@ public sealed class UnlockWorker : BackgroundService
 
     private LocalAuthResponse CancelRequest(string requestId)
     {
+        var cancelledActive = false;
         lock (_sessionSync)
         {
-            if (_currentActiveRequestId == requestId && _currentActiveCts != null)
+            if (_activeAuthRequests.TryGetValue(requestId, out var active))
             {
                 try
                 {
-                    _currentActiveCts.Cancel();
+                    active.Cancellation.Cancel();
+                    cancelledActive = true;
                     AppendServiceLog($"[CANCEL_REQUEST SUCCESS] request_id={requestId} active auth cancelled");
-                    return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Authentication request cancelled");
                 }
                 catch (Exception ex)
                 {
@@ -408,10 +437,10 @@ public sealed class UnlockWorker : BackgroundService
         }
 
         AppendServiceLog($"[CANCEL_REQUEST ACK] request_id={requestId}");
-        return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, "Request cancelled or not active");
+        return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, cancelledActive ? "Authentication request cancelled" : "Request cancelled or not active");
     }
 
-    private LocalAuthResponse ReserveGrant(LocalAuthRequest req)
+    private LocalAuthResponse ReserveGrant(LocalAuthRequest req, int clientProcessId)
     {
         var requestId = req.request_id;
         lock (_activeGrants)
@@ -437,6 +466,23 @@ public sealed class UnlockWorker : BackgroundService
                 _activeGrants.Remove(requestId);
                 AppendServiceLog($"[RESERVE_GRANT CONSUMED] request_id={requestId}");
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
+            }
+            if (grant.State is not (GrantState.Approved or GrantState.Reserved))
+            {
+                AppendServiceLog($"[RESERVE_GRANT INVALID_STATE] request_id={requestId} state={grant.State}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, $"Grant in state {grant.State}");
+            }
+
+            var shellClient = string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase);
+            if (shellClient && (string.IsNullOrWhiteSpace(req.user_sid)
+                || !req.session_id.HasValue
+                || !grant.SessionId.HasValue
+                || string.IsNullOrWhiteSpace(grant.UserSid)
+                || !string.Equals(grant.ClientType, "shell", StringComparison.OrdinalIgnoreCase)
+                || !_gateAuthority.IsCurrentShellRequest(requestId, req.user_sid, req.session_id.Value, clientProcessId)))
+            {
+                AppendServiceLog($"[RESERVE_GRANT GATE_BINDING_REJECTED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Shell gate request binding mismatch");
             }
 
             // SID binding verification
@@ -473,7 +519,7 @@ public sealed class UnlockWorker : BackgroundService
         }
     }
 
-    private LocalAuthResponse ReleaseGrant(LocalAuthRequest req)
+    private LocalAuthResponse ReleaseGrant(LocalAuthRequest req, int clientProcessId)
     {
         var requestId = req.request_id;
         lock (_activeGrants)
@@ -501,14 +547,28 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant already consumed");
             }
 
-            // Return grant to Approved state so user can retry password within remaining TTL
+            if (grant.State != GrantState.Reserved)
+            {
+                AppendServiceLog($"[RELEASE_GRANT INVALID_STATE] request_id={requestId} state={grant.State}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, $"Grant in state {grant.State}");
+            }
+            if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(req.user_sid)
+                    || !req.session_id.HasValue
+                    || !_gateAuthority.IsCurrentShellRequest(requestId, req.user_sid, req.session_id.Value, clientProcessId)))
+            {
+                AppendServiceLog($"[RELEASE_GRANT GATE_BINDING_REJECTED] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Shell gate request binding mismatch");
+            }
+
+            // Return a reserved grant to Approved state so the current client can retry.
             grant.State = GrantState.Approved;
             AppendServiceLog($"[RELEASE_GRANT SUCCESS] request_id={requestId} returned to Approved state, expires_in={grant.ExpiresAt - now}s");
             return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "grant_released", grant.ExpiresAt, null, null, grant.UserSid, grant.SessionId);
         }
     }
 
-    private LocalAuthResponse ConsumeGrant(LocalAuthRequest req)
+    private LocalAuthResponse ConsumeGrant(LocalAuthRequest req, int clientProcessId)
     {
         var requestId = req.request_id;
         lock (_activeGrants)
@@ -536,6 +596,22 @@ public sealed class UnlockWorker : BackgroundService
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Expired, "Grant expired (>30s)");
             }
 
+            var shellClient = string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase);
+            if (grant.State != GrantState.Reserved)
+            {
+                AppendServiceLog($"[CONSUME_GRANT INVALID_STATE] request_id={requestId} state={grant.State}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Grant must be reserved before consumption");
+            }
+            if (shellClient && (string.IsNullOrWhiteSpace(req.user_sid)
+                || !req.session_id.HasValue
+                || !grant.SessionId.HasValue
+                || string.IsNullOrWhiteSpace(grant.UserSid)
+                || !string.Equals(grant.ClientType, "shell", StringComparison.OrdinalIgnoreCase)))
+            {
+                AppendServiceLog($"[CONSUME_GRANT MISSING_BINDING] request_id={requestId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Complete Shell SID/session binding is required");
+            }
+
             // SID binding verification
             if (!string.IsNullOrWhiteSpace(req.user_sid) && !string.IsNullOrWhiteSpace(grant.UserSid))
             {
@@ -556,14 +632,22 @@ public sealed class UnlockWorker : BackgroundService
                 }
             }
 
-            // Grant is valid: consume immediately and remove
+            if (shellClient && !_gateAuthority.TryAuthorizeConsumedGrant(requestId, req.user_sid!, req.session_id!.Value, clientProcessId))
+            {
+                AppendServiceLog($"[GATE] authorization rejected request_id={requestId} session={req.session_id}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Shell request is no longer current for this session");
+            }
+
+            // Grant is valid: consume immediately and remove. For Shell grants the
+            // per-session gate authority is already UNLOCKED before this response.
             grant.State = GrantState.Consumed;
             _activeGrants.Remove(requestId);
 
             if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
             {
                 AppendServiceLog($"[SHELL GRANT CONSUMED] request_id={requestId} user_sid={grant.UserSid ?? req.user_sid ?? "(none)"} session_id={grant.SessionId ?? req.session_id ?? -1}");
-                AppendServiceLog($"[SHELL DESKTOP RELEASED] request_id={requestId}");
+                AppendServiceLog($"[GATE] authorization established request_id={requestId} session={req.session_id}");
+                AppendServiceLog($"[GATE] session={req.session_id} state=UNLOCKED explorer allowed");
             }
             else
             {
@@ -617,11 +701,24 @@ public sealed class UnlockWorker : BackgroundService
         foreach (var k in expiredKeys) _activeGrants.Remove(k);
     }
 
-    private LocalAuthResponse StartAuthRequest(LocalAuthRequest req, CancellationToken stoppingToken)
+    private LocalAuthResponse StartAuthRequest(LocalAuthRequest req, int clientProcessId, CancellationToken stoppingToken)
     {
         var requestId = req.request_id;
         if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
         {
+            if (string.IsNullOrWhiteSpace(req.user_sid) || !req.session_id.HasValue || req.session_id.Value <= 0)
+            {
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Shell SID and interactive Session ID are required");
+            }
+            if (!_gateAuthority.TryBeginShellRequest(req.session_id.Value, req.user_sid, clientProcessId, requestId, out var replacedRequestId))
+            {
+                AppendServiceLog($"[GATE] shell request rejected request_id={requestId} session={req.session_id} pid={clientProcessId}");
+                return new LocalAuthResponse(1, requestId, LocalAuthStatus.Rejected, "Shell is not the canonical locked-session process");
+            }
+            if (!string.IsNullOrWhiteSpace(replacedRequestId))
+            {
+                InvalidateWatchdogRequest(replacedRequestId);
+            }
             AppendServiceLog($"[SHELL AUTH START] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1}");
         }
         else
@@ -656,7 +753,9 @@ public sealed class UnlockWorker : BackgroundService
         {
             var identity = RequestIdentity.From(req);
             // If the same request is already in progress, return Pending ACK
-            if (_currentActiveRequestId == requestId && _currentActiveIdentity == identity && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
+            if (_activeAuthRequests.TryGetValue(requestId, out var active)
+                && active.Identity == identity
+                && !active.Cancellation.IsCancellationRequested)
             {
                 AppendServiceLog($"[REQUEST RE-ENTER] request_id={requestId} already active");
                 return new LocalAuthResponse(1, requestId, LocalAuthStatus.Pending, "Authentication in progress");
@@ -695,17 +794,8 @@ public sealed class UnlockWorker : BackgroundService
                 }
             }
 
-            // If another request is active, cancel it or return busy
-            if (_currentActiveRequestId != null && _currentActiveCts != null && !_currentActiveCts.IsCancellationRequested)
-            {
-                AppendServiceLog($"[BUSY] request_id={requestId} - cancelling previous active request {_currentActiveRequestId}");
-                try { _currentActiveCts.Cancel(); } catch { }
-            }
-
             var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            _currentActiveRequestId = requestId;
-            _currentActiveIdentity = identity;
-            _currentActiveCts = cts;
+            _activeAuthRequests[requestId] = new ActiveAuthRequest(identity, cts);
 
             lock (_activeGrants)
             {
@@ -756,6 +846,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
                     var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
                     if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
@@ -797,7 +888,7 @@ public sealed class UnlockWorker : BackgroundService
                 _log.LogInformation("Attempting BLE offline unlock for request {RequestId}...", requestId);
                 SetGrantMessage(requestId, "Scanning for iPhone via BLE...");
 
-                var bleResp = await TryBleUnlockAsync(cfg, deviceId, devicePubKey, !onlineAttempted, cancellationToken);
+                var bleResp = await TryBleUnlockAsync(requestId, cfg, deviceId, devicePubKey, !onlineAttempted, cancellationToken);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
 
                 // If the request began offline and connectivity returned during the
@@ -813,6 +904,7 @@ public sealed class UnlockWorker : BackgroundService
                         var restoredOnlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
                         if (restoredOnlineResp.Status == LocalAuthStatus.Approved)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
                             RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
                             AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
@@ -828,6 +920,7 @@ public sealed class UnlockWorker : BackgroundService
 
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
                     if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
                     {
@@ -863,11 +956,9 @@ public sealed class UnlockWorker : BackgroundService
         {
             lock (_sessionSync)
             {
-                if (_currentActiveRequestId == requestId)
+                if (_activeAuthRequests.Remove(requestId, out var completed))
                 {
-                    _currentActiveRequestId = null;
-                    _currentActiveIdentity = null;
-                    _currentActiveCts = null;
+                    completed.Cancellation.Dispose();
                 }
             }
         }
@@ -959,13 +1050,13 @@ public sealed class UnlockWorker : BackgroundService
     }
 
     private async Task<(string Status, string? Message, long? ExpiresAt)> TryBleUnlockAsync(
+        string requestId,
         LocalConfig cfg,
         string deviceId,
         string devicePubKey,
         bool switchToOnlineWhenInternetRestored,
         CancellationToken stoppingToken)
     {
-        var requestId = _currentActiveRequestId ?? "unknown";
         var loop = new BleConnectivityWaitLoop(_bluetoothRadioManager, _internetMonitor);
         var wait = await loop.WaitAsync(async scanToken =>
         {
@@ -1202,4 +1293,43 @@ public sealed class UnlockWorker : BackgroundService
             };
         }
     }
+
+    public void InjectPendingGrantForTesting(string requestId, string userSid, int sessionId, string clientType = "shell")
+    {
+        lock (_activeGrants)
+        {
+            _activeGrants[requestId] = new AuthGrant
+            {
+                RequestId = requestId,
+                ApprovedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
+                State = GrantState.Pending,
+                UserSid = userSid,
+                SessionId = sessionId,
+                ClientType = clientType
+            };
+        }
+    }
+
+    private void InvalidateWatchdogRequest(string requestId)
+    {
+        AppendServiceLog($"[GATE] invalidating stale shell request_id={requestId}");
+        CancelRequest(requestId);
+    }
+
+    private static int GetClientProcessId(NamedPipeServerStream pipe)
+    {
+        if (GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var processId))
+        {
+            return unchecked((int)processId);
+        }
+        return -1;
+    }
+
+    private static bool IsShellMutation(string command) => command is
+        "request_unlock" or "reserve_grant" or "consume_grant" or "release_grant" or "cancel_request";
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
 }

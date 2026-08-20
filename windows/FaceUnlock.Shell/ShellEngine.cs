@@ -82,6 +82,7 @@ public sealed class ShellEngine
     private bool _inputGuardAttempted = false;
     private bool _inputGuardFailed = false;
     private CancellationTokenSource? _attemptCts;
+    private readonly int _processId = Environment.ProcessId;
 
     public event Action<ShellState, string>? StateChanged;
 
@@ -222,17 +223,19 @@ public sealed class ShellEngine
         try
         {
             // Send request_unlock
+            var shellClientType = _mode == ShellMode.Shell ? "shell" : "shell_test";
             var req = new LocalAuthRequest(
                 version: 1,
                 command: "request_unlock",
                 request_id: reqId,
-                usage: "shell",
+                usage: _mode == ShellMode.Shell ? "shell" : "shell_test",
                 username: Environment.UserName,
                 user_sid: sid,
                 qualified_username: $"{Environment.UserDomainName}\\{Environment.UserName}",
                 session_id: session,
-                client_type: "shell",
-                pc_id: Environment.MachineName
+                client_type: shellClientType,
+                pc_id: Environment.MachineName,
+                process_id: _processId
             );
 
             var ack = await SendIpcAsync(req, timeoutMs: 3000);
@@ -262,7 +265,8 @@ public sealed class ShellEngine
                     request_id: reqId,
                     user_sid: sid,
                     session_id: session,
-                    client_type: "shell"
+                    client_type: shellClientType,
+                    process_id: _processId
                 );
 
                 var statusResp = await SendIpcAsync(statusReq, timeoutMs: 2000);
@@ -316,7 +320,7 @@ public sealed class ShellEngine
         }
         catch (OperationCanceledException)
         {
-            await SendIpcAsync(new LocalAuthRequest(1, "cancel_request", reqId), timeoutMs: 1500);
+            await SendIpcAsync(new LocalAuthRequest(1, "cancel_request", reqId, session_id: GetCurrentWindowsSessionId(), client_type: _mode == ShellMode.Shell ? "shell" : "shell_test", process_id: _processId), timeoutMs: 1500);
             return false;
         }
         catch (Exception ex)
@@ -350,7 +354,8 @@ public sealed class ShellEngine
             request_id: reqId,
             user_sid: sid,
             session_id: session,
-            client_type: "shell"
+            client_type: _mode == ShellMode.Shell ? "shell" : "shell_test",
+            process_id: _processId
         );
 
         var reserveResp = await SendIpcAsync(reserveReq, timeoutMs: 3000);
@@ -379,7 +384,8 @@ public sealed class ShellEngine
             request_id: reqId,
             user_sid: sid,
             session_id: session,
-            client_type: "shell"
+            client_type: _mode == ShellMode.Shell ? "shell" : "shell_test",
+            process_id: _processId
         );
 
         var consumeResp = await SendIpcAsync(consumeReq, timeoutMs: 3000);
@@ -387,6 +393,13 @@ public sealed class ShellEngine
         {
             Log($"Failed to consume grant for request_id={reqId}: status={consumeResp?.status} msg={consumeResp?.message}");
             SetState(ShellState.ERROR, "Authorization grant consumption failed.");
+            return false;
+        }
+        if (!string.Equals(consumeResp.user_sid, sid, StringComparison.OrdinalIgnoreCase)
+            || consumeResp.session_id != session)
+        {
+            Log($"Consumed grant binding mismatch: response_sid={consumeResp.user_sid} response_session={consumeResp.session_id} current_sid={sid} current_session={session}");
+            SetState(ShellState.ERROR, "Consumed authorization binding validation failed.");
             return false;
         }
 

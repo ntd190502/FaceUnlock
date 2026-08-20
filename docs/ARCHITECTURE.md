@@ -56,7 +56,7 @@ flow fails closed rather than pretending Bluetooth is available.
 For a pending Shell/Service authentication, BLE waiting is intentionally unbounded:
 it scans for 9 seconds, rests for 2.5 seconds, and repeats with exactly one active
 scanner and one IPC request ID. Pending grants do not expire while this loop is
-active; approval grants remain limited to 30 seconds. Cancellation, Recovery, or
+active; approval grants remain limited to 30 seconds. Explicit cancellation or
 service shutdown cancels the active scan immediately.
 
 ```text
@@ -100,7 +100,8 @@ If automatic discovery fails, Windows displays a QR containing the same signed o
 ### Windows
 - `FaceUnlock.Core`: protocol, DPAPI token persistence, ECDSA, REST client, `BLEFrameCodec`, and targeted BLE scanner.
 - `FaceUnlock.Agent`: device pairing/selection/revocation, QR display, online approval, BLE fallback, status/log UI, and duplicate-operation guards.
-- `FaceUnlock.Service`: background service/named-pipe base. Credential Provider integration is intentionally outside this phase.
+- `FaceUnlock.Service`: background service and named-pipe broker. In Phase F.2 it owns conservative `LOCKED`/`UNLOCKED` state per interactive SID/session, atomically authorizes desktop release when a reserved Shell grant is consumed, restarts a missing Shell with WTS user tokens plus `CreateProcessAsUser`, and terminates pre-authorization Explorer processes only in the matching session.
+- `FaceUnlock.Shell`: post-logon gate with a scoped low-level input guard. It cannot authorize itself; it launches Explorer only after the Service confirms consumption of the current request's bound grant.
 
 ### Hosting
 - PDO/MySQL storage with indexes for PC, device, and unlock sessions.

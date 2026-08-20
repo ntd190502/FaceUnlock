@@ -9,6 +9,20 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FaceUnlock.IpcIntegrationTests;
 
+public sealed class TestShellClientAuthorizer : IShellClientAuthorizer
+{
+    public bool IsTrustedShellClient(int clientProcessId, LocalAuthRequest request, out string? errorMessage)
+    {
+        errorMessage = null;
+        return true;
+    }
+}
+
+public sealed class TestNoOpWatchdog : IShellGateWatchdog
+{
+    public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
 public class Program
 {
     private const string PipeName = "FaceUnlock.Auth.Test";
@@ -20,7 +34,9 @@ public class Program
         Console.WriteLine("============================================================");
 
         var cts = new CancellationTokenSource();
-        var worker = new UnlockWorker(NullLogger<UnlockWorker>.Instance, PipeName);
+        var gateAuthority = new SessionGateAuthority();
+        var worker = new UnlockWorker(NullLogger<UnlockWorker>.Instance, PipeName, gateAuthority, new TestShellClientAuthorizer(), new TestNoOpWatchdog());
+        var clientProcessId = Environment.ProcessId;
 
         // Start UnlockWorker as background task
         var serviceTask = worker.StartAsync(cts.Token);
@@ -43,6 +59,13 @@ public class Program
                 failed++;
                 Console.WriteLine($"  [FAIL] {name} - {reason}");
             }
+        }
+
+        void RegisterShellRequest(string requestId, string sid, int sessionId)
+        {
+            gateAuthority.ObserveLockedSession(sessionId, sid);
+            gateAuthority.TryRegisterShellProcess(sessionId, sid, clientProcessId, out _);
+            gateAuthority.TryBeginShellRequest(sessionId, sid, clientProcessId, requestId, out _);
         }
 
         async Task<LocalAuthResponse?> SendIpcCommandAsync(LocalAuthRequest req, int timeoutMs = 3000)
@@ -165,51 +188,67 @@ public class Program
             // TEST M: reserve_grant & consume_grant for Shell
             Console.WriteLine("\n[Test M] Shell reserve_grant and consume_grant");
             var reqIdM = Guid.NewGuid().ToString("N");
+            RegisterShellRequest(reqIdM, "S-1-5-21-99999", 2);
             worker.InjectApprovedGrantForTesting(reqIdM, "S-1-5-21-99999", "TEST\\ShellUser", "device-test-shell", nowSec + 30, sessionId: 2, clientType: "shell");
             
-            var reserveRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell"));
+            var reserveRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespM != null && reserveRespM.status == LocalAuthStatus.Reserved, "TEST M: Shell reserve_grant succeeds", $"status={reserveRespM?.status}");
+            Check(!gateAuthority.GetSnapshot(2, "S-1-5-21-99999").ExplorerAllowed, "TEST M: Reserved but not consumed does not authorize Explorer");
 
-            var consumeRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell"));
+            var consumeRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
             Check(consumeRespM != null && consumeRespM.status == LocalAuthStatus.Consumed, "TEST M: Shell consume_grant succeeds", $"status={consumeRespM?.status}");
 
             // TEST N: Shell consume_grant on already consumed grant (replay) is rejected
             Console.WriteLine("\n[Test N] Shell consume_grant replay rejection");
-            var consumeRespN = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell"));
+            var consumeRespN = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
             Check(consumeRespN != null && (consumeRespN.status == LocalAuthStatus.NotFound || consumeRespN.status == LocalAuthStatus.Rejected),
                 "TEST N: Replayed consume_grant returns NotFound/Rejected", $"status={consumeRespN?.status}");
 
             // TEST O: Shell reserve_grant with wrong SID is rejected
             Console.WriteLine("\n[Test O] Shell reserve_grant with wrong SID");
             var reqIdO = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdO, "S-1-5-21-11111", "TEST\\UserO", "device-test-001", nowSec + 30, sessionId: 1, clientType: "shell");
-            var reserveRespO = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdO, null, null, "S-1-5-21-WRONG-SID", "TEST\\UserO", session_id: 1, client_type: "shell"));
+            RegisterShellRequest(reqIdO, "S-1-5-21-11111", 11);
+            worker.InjectApprovedGrantForTesting(reqIdO, "S-1-5-21-11111", "TEST\\UserO", "device-test-001", nowSec + 30, sessionId: 11, clientType: "shell");
+            var reserveRespO = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdO, null, null, "S-1-5-21-WRONG-SID", "TEST\\UserO", session_id: 11, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespO != null && reserveRespO.status == LocalAuthStatus.Rejected,
                 "TEST O: reserve_grant with wrong SID is rejected", $"status={reserveRespO?.status}");
 
             // TEST P: Shell reserve_grant with wrong Session ID is rejected
             Console.WriteLine("\n[Test P] Shell reserve_grant with wrong Session ID");
             var reqIdP = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdP, "S-1-5-21-22222", "TEST\\UserP", "device-test-001", nowSec + 30, sessionId: 1, clientType: "shell");
-            var reserveRespP = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdP, null, null, "S-1-5-21-22222", "TEST\\UserP", session_id: 999, client_type: "shell"));
+            RegisterShellRequest(reqIdP, "S-1-5-21-22222", 12);
+            worker.InjectApprovedGrantForTesting(reqIdP, "S-1-5-21-22222", "TEST\\UserP", "device-test-001", nowSec + 30, sessionId: 12, clientType: "shell");
+            var reserveRespP = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdP, null, null, "S-1-5-21-22222", "TEST\\UserP", session_id: 999, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespP != null && reserveRespP.status == LocalAuthStatus.Rejected,
                 "TEST P: reserve_grant with wrong Session ID is rejected", $"status={reserveRespP?.status}");
 
             // TEST Q: Shell consume_grant with wrong Session ID is rejected
             Console.WriteLine("\n[Test Q] Shell consume_grant with wrong Session ID");
             var reqIdQ = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdQ, "S-1-5-21-33333", "TEST\\UserQ", "device-test-001", nowSec + 30, sessionId: 3, clientType: "shell");
-            var consumeRespQ = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdQ, null, null, "S-1-5-21-33333", "TEST\\UserQ", session_id: 888, client_type: "shell"));
+            RegisterShellRequest(reqIdQ, "S-1-5-21-33333", 13);
+            worker.InjectApprovedGrantForTesting(reqIdQ, "S-1-5-21-33333", "TEST\\UserQ", "device-test-001", nowSec + 30, sessionId: 13, clientType: "shell");
+            var consumeRespQ = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdQ, null, null, "S-1-5-21-33333", "TEST\\UserQ", session_id: 888, client_type: "shell", process_id: clientProcessId));
             Check(consumeRespQ != null && consumeRespQ.status == LocalAuthStatus.Rejected,
                 "TEST Q: consume_grant with wrong Session ID is rejected", $"status={consumeRespQ?.status}");
 
             // TEST R: Shell reserve_grant on expired grant
             Console.WriteLine("\n[Test R] Shell reserve_grant on expired grant");
             var reqIdR = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdR, "S-1-5-21-44444", "TEST\\UserR", "device-test-001", nowSec - 5, sessionId: 1, clientType: "shell");
-            var reserveRespR = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdR, null, null, "S-1-5-21-44444", "TEST\\UserR", session_id: 1, client_type: "shell"));
+            RegisterShellRequest(reqIdR, "S-1-5-21-44444", 14);
+            worker.InjectApprovedGrantForTesting(reqIdR, "S-1-5-21-44444", "TEST\\UserR", "device-test-001", nowSec - 5, sessionId: 14, clientType: "shell");
+            var reserveRespR = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdR, null, null, "S-1-5-21-44444", "TEST\\UserR", session_id: 14, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespR != null && (reserveRespR.status == LocalAuthStatus.Expired || reserveRespR.status == LocalAuthStatus.NotFound),
                 "TEST R: reserve_grant on expired grant returns Expired or NotFound", $"status={reserveRespR?.status}");
+
+            // TEST S: unapproved pending grant cannot be promoted by reserve_grant
+            Console.WriteLine("\n[Test S] Shell reserve_grant on unapproved grant");
+            var reqIdS = Guid.NewGuid().ToString("N");
+            RegisterShellRequest(reqIdS, "S-1-5-21-55555", 15);
+            worker.InjectPendingGrantForTesting(reqIdS, "S-1-5-21-55555", 15);
+            var reserveRespS = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdS, user_sid: "S-1-5-21-55555", session_id: 15, client_type: "shell", process_id: clientProcessId));
+            Check(reserveRespS != null && reserveRespS.status == LocalAuthStatus.Rejected,
+                "TEST S: unapproved grant cannot be reserved or authorize desktop", $"status={reserveRespS?.status}");
+            Check(!gateAuthority.GetSnapshot(15, "S-1-5-21-55555").ExplorerAllowed, "TEST S: Explorer remains denied");
         }
         finally
         {

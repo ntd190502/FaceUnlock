@@ -1,6 +1,6 @@
 ; Script generated for Inno Setup 6
 #define MyAppName "FaceUnlock"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "FaceUnlock Team"
 #define MyAppURL "https://github.com/ntd190502/FaceUnlock"
 #define MyAppExeName "FaceUnlock.Agent.exe"

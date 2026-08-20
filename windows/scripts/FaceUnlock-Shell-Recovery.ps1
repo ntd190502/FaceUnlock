@@ -5,7 +5,8 @@
     Restores default Windows shell to explorer.exe, stops any hanging FaceUnlock Shell Gate instance,
     and validates system shell state.
     SECURITY BOUNDARY: FaceUnlock Phase F is a post-logon Shell Gate.
-    Administrative/Secure Attention recovery can bypass it by design.
+    This offline/administrative recovery disables the Shell Gate intentionally.
+    Normal-session Task Manager Explorer launch is denied by the Phase F.2 watchdog.
     Does NOT modify passwords, PINs, or user accounts.
 #>
 

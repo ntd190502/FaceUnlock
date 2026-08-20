@@ -120,12 +120,14 @@ public class Program
             // tests only; they do not claim to exercise a physical radio/network.
             var request = new LocalAuthRequest(
                 1, "request_unlock", "req-1", user_sid: "S-1-5-21-1",
-                session_id: 7, client_type: "shell", pc_id: "pc-1");
+                session_id: 7, client_type: "shell", pc_id: "pc-1", process_id: 101);
             var duplicate = request with { };
             var changedBinding = request with { session_id = 8 };
             Check(RequestIdentity.From(request) == RequestIdentity.From(duplicate),
                 "Test 9: Exact duplicate requests have the same dedup identity");
-            Check(RequestIdentity.From(request) != RequestIdentity.From(changedBinding),
+            var changedProcess = request with { process_id = 102 };
+            Check(RequestIdentity.From(request) != RequestIdentity.From(changedBinding)
+                && RequestIdentity.From(request) != RequestIdentity.From(changedProcess),
                 "Test 10: Security-binding changes alter the dedup identity");
 
             // Phase F.1 long-wait loop tests use fakes only; they do not claim

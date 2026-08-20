@@ -164,5 +164,6 @@ public static class RequestIdentity
         request.user_sid ?? "",
         request.session_id?.ToString() ?? "",
         request.client_type ?? "",
-        request.pc_id ?? "");
+        request.pc_id ?? "",
+        request.process_id?.ToString() ?? "");
 }

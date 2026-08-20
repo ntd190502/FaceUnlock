@@ -77,7 +77,10 @@
 ./windows/FaceUnlock.Core/Protocol.cs
 ./windows/FaceUnlock.Service/FaceUnlock.Service.csproj
 ./windows/FaceUnlock.Service/Program.cs
+./windows/FaceUnlock.Service/SessionGateAuthority.cs
+./windows/FaceUnlock.Service/ShellGateWatchdog.cs
 ./windows/FaceUnlock.Service/UnlockWorker.cs
+./windows/FaceUnlock.Service/WindowsShellGateSystem.cs
 ./windows/README.md
 ./windows/scripts/build.ps1
 ./windows/scripts/install-service.ps1

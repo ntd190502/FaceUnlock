@@ -16,7 +16,8 @@ rejects close requests. The guard is removed after an approved grant is consumed
 before Explorer starts, and during application shutdown.
 
 Ctrl+Alt+Del is the Windows Secure Attention Sequence and cannot be blocked by a
-user-mode application. Administrative/Secure Attention recovery (including Task
-Manager launching `explorer.exe`) can bypass the Shell Gate by design. FaceUnlock
-does not patch Winlogon/LSA, disable Windows security UI, or install persistent
-keyboard mappings or recovery policies.
+user-mode application. Phase F.2 keeps gate authority in the SYSTEM service: a
+killed locked Shell is restarted, and Explorer started from Task Manager before a
+bound grant is consumed is terminated in that same session. FaceUnlock does not
+patch Winlogon/LSA, disable Windows security UI, or install persistent keyboard
+mappings or recovery policies. WinRE and Safe Mode remain unchanged.

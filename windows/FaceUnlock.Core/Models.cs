@@ -22,7 +22,8 @@ public sealed record LocalAuthRequest(
     string? qualified_username = null,
     int? session_id = null,
     string? client_type = null,
-    string? pc_id = null
+    string? pc_id = null,
+    int? process_id = null
 );
 
 public sealed record LocalAuthResponse(

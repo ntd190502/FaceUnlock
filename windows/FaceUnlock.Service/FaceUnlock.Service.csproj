@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 <PropertyGroup><TargetFramework>net8.0-windows10.0.26100.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup>
-<ItemGroup><ProjectReference Include="..\FaceUnlock.Core\FaceUnlock.Core.csproj"/><PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1"/></ItemGroup>
+<ItemGroup><ProjectReference Include="..\FaceUnlock.Core\FaceUnlock.Core.csproj"/><PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1"/><PackageReference Include="System.Management" Version="8.0.0"/></ItemGroup>
 </Project>

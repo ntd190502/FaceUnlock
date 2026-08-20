@@ -1,5 +1,5 @@
 <#
-Installer orchestration for Phase F/F.1. This script is intentionally limited to
+Installer orchestration for Phase F/F.1/F.2. This script is intentionally limited to
 the post-logon Shell Gate and never touches LSA, passwords, PIN, or AutoLogon.
 #>
 [CmdletBinding()]
@@ -67,6 +67,9 @@ function EnsureService {
         & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Existing service config failed (exit=$LASTEXITCODE)" }
     }
+    & "$env:SystemRoot\System32\sc.exe" failure $serviceName 'reset= 86400' 'actions= restart/2000/restart/5000/restart/10000' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Service recovery policy failed (exit=$LASTEXITCODE)" }
+    Log '[SERVICE] crash recovery restart policy PASS'
     $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
     Log "[SERVICE] path=$($serviceInfo.PathName)"
     Log "[SERVICE] startup=$($serviceInfo.StartMode)"

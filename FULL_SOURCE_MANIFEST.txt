@@ -102,7 +102,10 @@ windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj
 windows/FaceUnlock.IpcIntegrationTests/Program.cs
 windows/FaceUnlock.Service/FaceUnlock.Service.csproj
 windows/FaceUnlock.Service/Program.cs
+windows/FaceUnlock.Service/SessionGateAuthority.cs
+windows/FaceUnlock.Service/ShellGateWatchdog.cs
 windows/FaceUnlock.Service/UnlockWorker.cs
+windows/FaceUnlock.Service/WindowsShellGateSystem.cs
 windows/FaceUnlock.Shell/App.xaml
 windows/FaceUnlock.Shell/App.xaml.cs
 windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj
