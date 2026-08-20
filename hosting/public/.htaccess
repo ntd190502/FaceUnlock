@@ -1,4 +1,5 @@
 RewriteEngine On
+RewriteRule ^v1/control/ control.php [QSA,L]
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [QSA,L]
