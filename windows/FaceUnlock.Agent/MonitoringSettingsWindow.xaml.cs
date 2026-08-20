@@ -1,0 +1,10 @@
+using System.Net.Http.Json;
+using System.Windows;
+using FaceUnlock.Core;
+namespace FaceUnlock.Agent;
+public partial class MonitoringSettingsWindow:Window{
+ readonly ConfigStore _store=new();public MonitoringSettingsWindow(){InitializeComponent();var c=_store.Load();TempEnabled.IsChecked=c.TemperatureAlertEnabled;TempLimit.Text=c.TemperatureAlertCelsius.ToString();RamEnabled.IsChecked=c.RamAlertEnabled;RamLimit.Text=c.RamAlertPercent.ToString();Cooldown.Text=c.AlertCooldownSeconds.ToString();BotToken.Password=c.TelegramBotToken??"";ChatId.Text=c.TelegramChatId??"";}
+ void Save_Click(object sender,RoutedEventArgs e){try{Save();Result.Text="Saved. FaceUnlock Service will use the new alert settings automatically.";}catch(Exception ex){Result.Text=ex.Message;}}
+ async void Test_Click(object sender,RoutedEventArgs e){try{var c=Save();if(string.IsNullOrWhiteSpace(c.TelegramBotToken)||string.IsNullOrWhiteSpace(c.TelegramChatId))throw new InvalidOperationException("Bot Token and Chat ID are required.");using var h=new HttpClient();var r=await h.PostAsJsonAsync($"https://api.telegram.org/bot{c.TelegramBotToken}/sendMessage",new{chat_id=c.TelegramChatId,text=$"✅ FaceUnlock Telegram test\nPC: {c.PcName}"});Result.Text=r.IsSuccessStatusCode?"Test message sent.":$"Telegram HTTP {(int)r.StatusCode}";}catch(Exception ex){Result.Text=ex.Message;}}
+ LocalConfig Save(){var c=_store.Load();if(!double.TryParse(TempLimit.Text,out var t)||t<20||t>120)throw new InvalidOperationException("Temperature limit must be 20–120°C.");if(!double.TryParse(RamLimit.Text,out var r)||r<10||r>100)throw new InvalidOperationException("RAM limit must be 10–100%.");if(!int.TryParse(Cooldown.Text,out var cd)||cd<30||cd>86400)throw new InvalidOperationException("Cooldown must be 30–86400 seconds.");c.TemperatureAlertEnabled=TempEnabled.IsChecked==true;c.TemperatureAlertCelsius=t;c.RamAlertEnabled=RamEnabled.IsChecked==true;c.RamAlertPercent=r;c.AlertCooldownSeconds=cd;c.TelegramBotToken=BotToken.Password.Trim();c.TelegramChatId=ChatId.Text.Trim();_store.Save(c);return c;}
+}
