@@ -136,8 +136,15 @@ if ($newSecurityPackages.Count -ne $securityPackages.Count) {
 
 $legacyCpDll = Join-Path $InstallDir 'FaceUnlockCredentialProvider.dll'
 if (-not $TestMode -and (Test-Path -LiteralPath $legacyCpDll -PathType Leaf)) {
-    & "$env:SystemRoot\System32\regsvr32.exe" /u /s $legacyCpDll
-    Write-MigrationLog "legacy COM unregister attempted (exit=$LASTEXITCODE)"
+    $unregister = Start-Process -FilePath "$env:SystemRoot\System32\regsvr32.exe" `
+        -ArgumentList @('/u','/s',('"' + $legacyCpDll + '"')) -PassThru -WindowStyle Hidden
+    if (-not $unregister.WaitForExit(10000)) {
+        $unregister.Kill()
+        $unregister.WaitForExit()
+        Write-MigrationLog 'legacy COM unregister timed out; continuing with exact registry removal'
+    } else {
+        Write-MigrationLog "legacy COM unregister attempted (exit=$($unregister.ExitCode))"
+    }
 }
 Remove-ExactRegistryKey $CredentialProviderKey 'Credential Provider CLSID'
 Remove-ExactRegistryKey $ComClassKey 'COM CLSID'
@@ -147,9 +154,6 @@ $legacyInstallFiles = @(
     'FaceUnlockAuthPackage.dll',
     'Enable-CredentialProvider.ps1',
     'Disable-CredentialProvider.ps1',
-    'Register.ps1',
-    'Unregister.ps1',
-    'Recovery.ps1',
     'Enable-AuthPackage.ps1',
     'Disable-AuthPackage.ps1',
     'Check-AuthPackage.ps1',

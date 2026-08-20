@@ -59,6 +59,14 @@ public sealed class ShellGateWatchdog : IShellGateWatchdog
             {
                 Tick();
             }
+            catch (NativeApiFailureException ex)
+            {
+                var bindingException = ex.InnerException?.GetType().Name ?? ex.GetType().Name;
+                LogRateLimited(
+                    $"native-{ex.Dll}-{ex.Api}",
+                    $"[WATCHDOG][NATIVE_FAILURE] api={ex.Api} dll={ex.Dll} exception={bindingException}",
+                    TimeSpan.FromMinutes(1));
+            }
             catch (Exception ex)
             {
                 LogRateLimited("tick-error", $"[WATCHDOG] error={ex.GetType().Name} message={ex.Message}");
@@ -233,10 +241,11 @@ public sealed class ShellGateWatchdog : IShellGateWatchdog
         LogRateLimited($"restart-error-{session.SessionId}", $"[WATCHDOG] session={session.SessionId} shell restart failed backoff={delaySeconds:F0}s error={error}");
     }
 
-    private void LogRateLimited(string key, string message)
+    private void LogRateLimited(string key, string message, TimeSpan? minimumInterval = null)
     {
         var now = DateTimeOffset.UtcNow;
-        if (_lastLog.TryGetValue(key, out var last) && now - last < TimeSpan.FromSeconds(5))
+        var interval = minimumInterval ?? TimeSpan.FromSeconds(5);
+        if (_lastLog.TryGetValue(key, out var last) && now - last < interval)
         {
             return;
         }

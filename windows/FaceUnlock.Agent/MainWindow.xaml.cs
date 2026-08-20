@@ -6,6 +6,9 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.IO.Pipes;
+using System.Text;
+using System.ServiceProcess;
 
 namespace FaceUnlock.Agent;
 public partial class MainWindow : Window
@@ -15,8 +18,32 @@ public partial class MainWindow : Window
     bool Paired()=>store.GetPairingState().IsPaired;
     static string InstallDir=>AppContext.BaseDirectory.TrimEnd('\\');
     static bool ShellEnabled(){try{using var k=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Winlogon");return (k?.GetValue("Shell") as string)?.Contains("FaceUnlockShell.exe",StringComparison.OrdinalIgnoreCase)==true;}catch{return false;}}
-    static bool ServiceRunning(){try{using var p=Process.Start(new ProcessStartInfo("sc.exe","query \"FaceUnlock Service\""){RedirectStandardOutput=true,UseShellExecute=false,CreateNoWindow=true});var o=p!.StandardOutput.ReadToEnd();p.WaitForExit(1500);return o.Contains("RUNNING",StringComparison.OrdinalIgnoreCase);}catch{return false;}}
-    void RefreshSetupStatus(){var state=store.GetPairingState();var paired=state.IsPaired;var service=ServiceRunning();var shell=ShellEnabled();Status.Text=$"PAIRING: {(paired?"Paired":"Not Paired")}   SERVICE: {(service?"Running":"Error")}   SHELL GATE: {(shell?"Enabled":"Disabled")}";SetupStatus.Text=!paired?$"Pair your iPhone to finish FaceUnlock setup. ({state.Reason})":shell?"FaceUnlock is ready.":"FaceUnlock is ready. Enable FaceUnlock on Windows startup?";EnableButton.Visibility=paired&&!shell?Visibility.Visible:Visibility.Collapsed;}
+    static FaceUnlockServiceHealth ProbeServiceHealth()
+    {
+        try
+        {
+            using var controller=new ServiceController("FaceUnlock Service");
+            ServiceControllerStatus controllerStatus;
+            try{controllerStatus=controller.Status;}
+            catch(InvalidOperationException){return FaceUnlockServiceHealth.Missing;}
+            if(controllerStatus!=ServiceControllerStatus.Running)return FaceUnlockServiceHealth.Stopped;
+
+            using var pipe=new NamedPipeClientStream(".","FaceUnlock.Auth.v1",PipeDirection.InOut,PipeOptions.None);
+            pipe.Connect(750);
+            using var writer=new StreamWriter(pipe,new UTF8Encoding(false),1024,true){AutoFlush=true};
+            using var reader=new StreamReader(pipe,new UTF8Encoding(false),false,1024,true);
+            var requestId=Guid.NewGuid().ToString("N");
+            writer.WriteLine(JsonSerializer.Serialize(new{protocol_version=1,command="ping",request_id=requestId,client_type="agent_health"}));
+            var response=reader.ReadLine();
+            if(string.IsNullOrWhiteSpace(response))return FaceUnlockServiceHealth.Unhealthy;
+            using var json=JsonDocument.Parse(response);
+            return json.RootElement.TryGetProperty("status",out var status)&&status.GetString()?.Equals("ok",StringComparison.OrdinalIgnoreCase)==true
+                ? FaceUnlockServiceHealth.Healthy : FaceUnlockServiceHealth.Unhealthy;
+        }
+        catch(System.TimeoutException){return FaceUnlockServiceHealth.Unhealthy;}
+        catch{return FaceUnlockServiceHealth.Unhealthy;}
+    }
+    void RefreshSetupStatus(){var state=store.GetPairingState();var paired=state.IsPaired;var service=ProbeServiceHealth();var shell=ShellEnabled();var readiness=SetupReadiness.Evaluate(paired,state.Reason,service,shell);Status.Text=$"PAIRING: {(paired?"Paired":"Not Paired")}   SERVICE: {readiness.ServiceLabel}   SHELL GATE: {(shell?"Enabled":"Disabled")}";SetupStatus.Text=readiness.Message;EnableButton.Visibility=readiness.CanEnableShellGate?Visibility.Visible:Visibility.Collapsed;}
     void Write(string s){Log.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}\n");Log.ScrollToEnd();}
     void ShowQr(string text){using var gen=new QRCodeGenerator();using var data=gen.CreateQrCode(text,QRCodeGenerator.ECCLevel.Q);var png=new PngByteQRCode(data).GetGraphic(8);var img=new BitmapImage();using var ms=new MemoryStream(png);img.BeginInit();img.CacheOption=BitmapCacheOption.OnLoad;img.StreamSource=ms;img.EndInit();QrImage.Source=img;}
 

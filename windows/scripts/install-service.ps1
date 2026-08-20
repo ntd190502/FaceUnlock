@@ -19,12 +19,16 @@ if (-not $exe) {
     throw "ERROR: FaceUnlock.Service.exe was not found. Please build the Service first."
 }
 
-# Stop and delete old service if exists
-sc.exe stop "FaceUnlock Service" 2>$null | Out-Null
-sc.exe delete "FaceUnlock Service" 2>$null | Out-Null
-Start-Sleep -Seconds 1
+$serviceName = 'FaceUnlock Service'
+$service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+if (-not $service) {
+    New-Service -Name $serviceName -DisplayName $serviceName -BinaryPathName "`"$exe`"" -StartupType Automatic | Out-Null
+} elseif ($service.Status -eq 'Running') {
+    Stop-Service -Name $serviceName -Force
+}
 
-sc.exe create "FaceUnlock Service" binPath= "`"$exe`"" start= auto
+sc.exe config "FaceUnlock Service" binPath= "`"$exe`"" start= auto
+if ($LASTEXITCODE -ne 0) { throw "Could not repair FaceUnlock Service configuration (exit=$LASTEXITCODE)" }
 sc.exe description "FaceUnlock Service" "FaceUnlock Phase F Shell Gate and phone approval broker"
 sc.exe failure "FaceUnlock Service" reset= 86400 actions= restart/5000/restart/10000/restart/60000
 sc.exe start "FaceUnlock Service"

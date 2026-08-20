@@ -73,8 +73,16 @@ public sealed class FakeShellGateSystem : IShellGateSystem
     public int NextShellProcessId { get; set; } = 9000;
     public bool LaunchSucceeds { get; set; } = true;
     public Action? BeforeExplorerQuery { get; set; }
+    public bool ThrowNativeFailure { get; set; }
 
-    public IReadOnlyList<InteractiveGateSession> GetInteractiveSessions() => Sessions;
+    public IReadOnlyList<InteractiveGateSession> GetInteractiveSessions()
+    {
+        if (ThrowNativeFailure)
+        {
+            throw new NativeApiFailureException("WTSQueryUserToken", "wtsapi32.dll", new EntryPointNotFoundException());
+        }
+        return Sessions;
+    }
     public IReadOnlyList<SessionProcess> GetShellProcesses(int sessionId) => Shells.TryGetValue(sessionId, out var value) ? value : [];
     public IReadOnlyList<SessionProcess> GetExplorerProcesses(int sessionId)
     {
@@ -171,6 +179,20 @@ public class Program
         Check(watchdogSystem.LaunchCount == 1, "F.2: LOCKED + Shell missing requests restart");
         watchdog.Tick();
         Check(watchdogSystem.LaunchCount == 1, "F.2: LOCKED + Shell alive does not restart again");
+
+        var nativeFailureLogs = new List<string>();
+        var nativeFailureSystem = new FakeShellGateSystem { ThrowNativeFailure = true };
+        var nativeFailureWatchdog = new ShellGateWatchdog(
+            new SessionGateAuthority(), nativeFailureSystem, _ => { }, nativeFailureLogs.Add, TimeSpan.FromMilliseconds(1));
+        using (var nativeFailureCancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(30)))
+        {
+            await nativeFailureWatchdog.RunAsync(nativeFailureCancellation.Token);
+        }
+        Check(nativeFailureLogs.Count == 1
+              && nativeFailureLogs[0].Contains("[WATCHDOG][NATIVE_FAILURE] api=WTSQueryUserToken dll=wtsapi32.dll exception=EntryPointNotFoundException"),
+            "F.2: Native API failure is exact and rate-limited");
+        Check(!new SessionGateAuthority().GetSnapshot(41, watchdogSession.UserSid).ExplorerAllowed,
+            "F.2: Native API failure remains fail-closed");
 
         var firstShellPid = watchdogSystem.Shells[41].Single().ProcessId;
         Check(watchdogAuthority.TryBeginShellRequest(41, watchdogSession.UserSid, firstShellPid, "old-request", out _), "F.2: Initial Shell request registered");

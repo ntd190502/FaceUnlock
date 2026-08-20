@@ -53,3 +53,7 @@ For higher-assurance deployments, add an independent local comparison of the iPh
 CLSID and `FaceUnlockAuthPackage` values, verifies `msv1_0` remains registered,
 preserves unrelated authentication/security packages and pairing state, schedules
 locked legacy DLL deletion for the next reboot, and never requests a reboot itself.
+It never deletes the `FaceUnlock Service` SCM registration. Setup temporarily restores
+Explorer while repairing the Service and will not re-enable the Shell Gate until its
+path, Automatic mode, Running state, and named-pipe health all pass. F.2 native imports
+use explicit case-correct Windows entry points verified on a real Windows CI runner.

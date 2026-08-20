@@ -52,6 +52,30 @@ function RestoreExplorer {
     $now = (Get-ItemProperty -Path $winlogon -Name Shell -ErrorAction SilentlyContinue).Shell
     if ($now -and $now -notmatch '^explorer\.exe$') { throw "Windows Shell restore verification failed: $now" }
 }
+function Test-ServicePipe {
+    $client = [IO.Pipes.NamedPipeClientStream]::new('.', 'FaceUnlock.Auth.v1', [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
+    try {
+        $client.Connect(1500)
+        $writer = [IO.StreamWriter]::new($client, [Text.UTF8Encoding]::new($false), 1024, $true)
+        $reader = [IO.StreamReader]::new($client, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
+        try {
+            $writer.AutoFlush = $true
+            $requestId = [Guid]::NewGuid().ToString('N')
+            $writer.WriteLine((@{ protocol_version=1; command='ping'; request_id=$requestId; client_type='setup_health' } | ConvertTo-Json -Compress))
+            $response = $reader.ReadLine()
+            if (-not $response) { return $false }
+            $parsed = $response | ConvertFrom-Json
+            return ($parsed.status -ieq 'ok' -and $parsed.request_id -eq $requestId)
+        }
+        finally { $writer.Dispose(); $reader.Dispose() }
+    }
+    catch { return $false }
+    finally { $client.Dispose() }
+}
+function Normalize-ServicePath([string]$PathName) {
+    if ([string]::IsNullOrWhiteSpace($PathName)) { return '' }
+    return [Environment]::ExpandEnvironmentVariables($PathName).Trim().Trim('"')
+}
 function EnsureService {
     $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     Log "[SERVICE] exists=$([bool]$svc)"
@@ -65,20 +89,24 @@ function EnsureService {
             Log '[SERVICE] create PASS'
         }
         catch { Log "[SERVICE] create FAIL type=$($_.Exception.GetType().Name) message=$($_.Exception.Message)"; throw }
-    } else {
-        if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop; Log '[SERVICE] stop PASS' }
-        Log '[SERVICE] repair binPath requested'
+        $svc = Get-Service -Name $serviceName -ErrorAction Stop
     }
-    if ($svc) {
-        & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Existing service config failed (exit=$LASTEXITCODE)" }
-    }
+    if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop; Log '[SERVICE] stop PASS' }
+    Log '[SERVICE] repair path/start mode requested'
+    & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Service config repair failed (exit=$LASTEXITCODE)" }
     & "$env:SystemRoot\System32\sc.exe" failure $serviceName 'reset= 86400' 'actions= restart/2000/restart/5000/restart/10000' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Service recovery policy failed (exit=$LASTEXITCODE)" }
     Log '[SERVICE] crash recovery restart policy PASS'
     $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-    Log "[SERVICE] path=$($serviceInfo.PathName)"
+    $actualPath = Normalize-ServicePath $serviceInfo.PathName
+    $canonicalExpectedPath = [IO.Path]::GetFullPath($exePath)
+    Log "[SERVICE] path=$actualPath expected=$canonicalExpectedPath"
     Log "[SERVICE] startup=$($serviceInfo.StartMode)"
+    if (-not [string]::Equals($actualPath, $canonicalExpectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Service path is '$actualPath', expected '$canonicalExpectedPath'"
+    }
+    if ($serviceInfo.StartMode -ne 'Auto') { throw "Service startup mode is $($serviceInfo.StartMode), expected Auto" }
     Start-Service -Name $serviceName -ErrorAction Stop
     Log '[SERVICE] start requested'
     for ($i=0; $i -lt 10; $i++) {
@@ -87,13 +115,20 @@ function EnsureService {
         if ($svc -and $svc.Status -eq 'Running') {
             $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
             if ($serviceInfo.StartMode -ne 'Auto') { throw "Service startup mode is $($serviceInfo.StartMode), expected Auto" }
-            Log '[SERVICE] running PASS'; Log '[SERVICE] health PASS (service running)'; return
+            $actualPath = Normalize-ServicePath $serviceInfo.PathName
+            if (-not [string]::Equals($actualPath, $canonicalExpectedPath, [StringComparison]::OrdinalIgnoreCase)) { throw "Service path changed to '$actualPath'" }
+            for ($pipeAttempt=0; $pipeAttempt -lt 10; $pipeAttempt++) {
+                if (Test-ServicePipe) {
+                    Log '[SERVICE] running/path/auto/IPC health PASS'
+                    return
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            throw 'Service is Running but FaceUnlock.Auth.v1 ping failed'
         }
     }
     throw 'Service health failed: service did not reach Running within 10 seconds'
 }
-
-Invoke-LegacySecurityMigration
 
 if ($Mode -eq 'uninstall') {
     Log 'uninstall requested: restoring explorer before removing binaries'
@@ -110,20 +145,29 @@ if ($Mode -eq 'uninstall') {
 }
 
 $wasEnabled = ShellGateEnabled
-$pairingState = Get-PairingState
-$paired = $pairingState.Paired
 $serviceBefore = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $metadataBefore = Test-Path $configPath
 $installMode = if ($serviceBefore -and $metadataBefore) { 'upgrade' } elseif ($metadataBefore) { 'repair' } else { 'fresh' }
-Log "install mode=$installMode paired=$paired shell_enabled_before=$wasEnabled"
-Log "[PAIRING] state=$(if($paired){'paired'}else{'unpaired'}) reason=$($pairingState.Reason)"
+Log "install mode=$installMode shell_enabled_before=$wasEnabled service_exists_before=$([bool]$serviceBefore)"
 
 try {
     if (-not (Test-Path $shellExe) -or -not (Test-Path $recovery) -or -not (Test-Path $enable) -or -not (Test-Path $disable)) {
         throw 'Required Shell Gate binary or recovery script is missing'
     }
+    if ($wasEnabled) {
+        RestoreExplorer
+        Log '[RECOVERY] Shell Gate temporarily restored to Explorer during service repair'
+    }
+    $migrationFailure = $null
+    try { Invoke-LegacySecurityMigration }
+    catch { $migrationFailure = $_; Log "[MIGRATION] cleanup FAIL; service repair will still run: $($_.Exception.Message)" }
     EnsureService
-    Log 'service automatic/running PASS'
+    Log 'service automatic/running/path/IPC PASS'
+    if ($migrationFailure) { throw "Legacy migration failed after service recovery: $($migrationFailure.Exception.Message)" }
+
+    $pairingState = Get-PairingState
+    $paired = $pairingState.Paired
+    Log "[PAIRING] state=$(if($paired){'paired'}else{'unpaired'}) reason=$($pairingState.Reason)"
 
     # A deliberate user-disabled upgrade stays disabled. Only a paired fresh
     # install is auto-enabled; paired enabled upgrades retain the enabled state.

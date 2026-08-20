@@ -75,8 +75,11 @@ windows/FaceUnlock.Core/KeyStore.cs
 windows/FaceUnlock.Core/LogicalUnlockAttempt.cs
 windows/FaceUnlock.Core/Models.cs
 windows/FaceUnlock.Core/Protocol.cs
+windows/FaceUnlock.Core/SetupReadiness.cs
 windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj
 windows/FaceUnlock.IpcIntegrationTests/Program.cs
+windows/FaceUnlock.NativeApiSelfTest/FaceUnlock.NativeApiSelfTest.csproj
+windows/FaceUnlock.NativeApiSelfTest/Program.cs
 windows/FaceUnlock.Service/FaceUnlock.Service.csproj
 windows/FaceUnlock.Service/Program.cs
 windows/FaceUnlock.Service/SessionGateAuthority.cs
@@ -103,6 +106,7 @@ windows/scripts/Enable-ShellGate.ps1
 windows/scripts/FaceUnlock-Shell-Recovery.ps1
 windows/scripts/Setup-Ready.ps1
 windows/scripts/Test-LegacyCleanup.ps1
+windows/scripts/Test-SetupReadyRegression.ps1
 windows/scripts/build.ps1
 windows/scripts/install-service.ps1
 windows/scripts/uninstall-service.ps1

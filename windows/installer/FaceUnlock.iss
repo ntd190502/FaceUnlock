@@ -1,6 +1,6 @@
 ; Script generated for Inno Setup 6
 #define MyAppName "FaceUnlock"
-#define MyAppVersion "1.6.0"
+#define MyAppVersion "1.6.1"
 #define MyAppPublisher "FaceUnlock Team"
 #define MyAppURL "https://github.com/ntd190502/FaceUnlock"
 #define MyAppExeName "FaceUnlock.Agent.exe"
@@ -47,12 +47,29 @@ Name: "{group}\FaceUnlock Diagnostics"; Filename: "powershell.exe"; Parameters: 
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Idempotent service/pairing/shell policy. It logs degraded failures and restores
-; explorer.exe instead of leaving a broken Shell Gate active.
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode install -InstallDir ""{app}"""; Flags: runhidden waituntilterminated
 ; Launch Agent after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; This runs first and exits nonzero if explorer restore cannot be verified.
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\Setup-Ready.ps1"" -Mode uninstall -InstallDir ""{app}"""; Flags: runhidden waituntilterminated
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  PowerShellExe: String;
+  SetupScript: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    SetupScript := ExpandConstant('{app}\Setup-Ready.ps1');
+    if (not Exec(PowerShellExe,
+      '-NoProfile -ExecutionPolicy Bypass -File "' + SetupScript + '" -Mode install -InstallDir "' + ExpandConstant('{app}') + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    begin
+      RaiseException(Format('FaceUnlock service/Shell Gate health setup failed (exit code %d). Explorer recovery was applied; see installer.log.', [ResultCode]));
+    end;
+  end;
+end;

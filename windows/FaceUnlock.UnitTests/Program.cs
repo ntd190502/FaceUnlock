@@ -153,6 +153,20 @@ public class Program
             await userOverrideLeases.ReleaseAsync("user-override");
             Check(userOverrideRadio.State == BluetoothState.Enabled && userOverrideRadio.DisableCalls == 0,
                 "Test 23: External Bluetooth state change revokes FaceUnlock disable ownership");
+
+            var missingService = SetupReadiness.Evaluate(true, "paired_secure_token", FaceUnlockServiceHealth.Missing, true);
+            Check(!missingService.IsReady && missingService.ServiceLabel == "Missing"
+                  && missingService.Message == "FaceUnlock Service is not installed.",
+                "Test 24: Missing service cannot produce Ready status");
+            var stoppedService = SetupReadiness.Evaluate(true, "paired_secure_token", FaceUnlockServiceHealth.Stopped, true);
+            Check(!stoppedService.IsReady && stoppedService.Message == "FaceUnlock Service is stopped.",
+                "Test 25: Stopped service cannot produce Ready status");
+            var unhealthyService = SetupReadiness.Evaluate(true, "paired_secure_token", FaceUnlockServiceHealth.Unhealthy, true);
+            Check(!unhealthyService.IsReady && unhealthyService.Message == "FaceUnlock Service is unhealthy.",
+                "Test 26: Running service with failed IPC cannot produce Ready status");
+            var healthyService = SetupReadiness.Evaluate(true, "paired_secure_token", FaceUnlockServiceHealth.Healthy, true);
+            Check(healthyService.IsReady && healthyService.Message == "FaceUnlock is ready.",
+                "Test 27: Ready requires pairing, healthy service, and enabled Shell Gate");
         Console.WriteLine("\n============================================================");
         Console.WriteLine($"  UNIT TEST RESULTS: {passed} passed, {failed} failed");
         Console.WriteLine("============================================================");

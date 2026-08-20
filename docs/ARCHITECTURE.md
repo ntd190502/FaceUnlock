@@ -137,3 +137,8 @@ The old Credential Provider, Phase E AuthPackage, CompanionCDF reference, and th
 harnesses have been removed. The installer retains only `Cleanup-PhaseE.ps1` as an
 idempotent migration: it removes the exact historical FaceUnlock CLSID/package,
 preserves `msv1_0` and unrelated providers, cleans obsolete files, and never reboots.
+
+Setup treats `FaceUnlock Service` as a current component, not legacy state. On every
+install/upgrade it recreates or repairs the SCM entry, exact executable path and
+Automatic start mode, then requires both Running state and a `FaceUnlock.Auth.v1`
+ping before restoring or enabling the Shell Gate.

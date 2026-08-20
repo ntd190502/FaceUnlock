@@ -22,6 +22,8 @@ The retired Credential Provider/AuthPackage projects and their harnesses are not
 part of the repository or build. `Cleanup-PhaseE.ps1` is packaged only for upgrade
 migration. The Windows release workflow publishes Agent, Service, and Shell, validates
 the installer staging set, then compiles `FaceUnlock-Setup.exe` with Inno Setup 6.
+CI also runs `FaceUnlock.NativeApiSelfTest` plus a real SCM/named-pipe Setup repair
+test on an ephemeral Windows runner.
 
 Install the service only after Agent online/BLE approval tests pass:
 

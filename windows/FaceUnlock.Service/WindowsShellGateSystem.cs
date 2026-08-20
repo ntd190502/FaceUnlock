@@ -8,6 +8,19 @@ using Microsoft.Win32;
 
 namespace FaceUnlock.Service;
 
+public sealed class NativeApiFailureException : Exception
+{
+    public string Api { get; }
+    public string Dll { get; }
+
+    public NativeApiFailureException(string api, string dll, Exception innerException)
+        : base($"Native API binding failed: {dll}!{api}", innerException)
+    {
+        Api = api;
+        Dll = dll;
+    }
+}
+
 public sealed class WindowsShellGateSystem : IShellGateSystem
 {
     private const int WtsActive = 0;
@@ -19,6 +32,16 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
 
     private readonly Func<bool> _pairedCheck;
     private readonly string _shellPath;
+
+    private static T NativeCall<T>(string api, string dll, Func<T> call)
+    {
+        try { return call(); }
+        catch (EntryPointNotFoundException ex) { throw new NativeApiFailureException(api, dll, ex); }
+        catch (DllNotFoundException ex) { throw new NativeApiFailureException(api, dll, ex); }
+    }
+
+    private static void NativeCall(string api, string dll, Action call) =>
+        NativeCall(api, dll, () => { call(); return true; });
 
     public WindowsShellGateSystem(Func<bool> pairedCheck, string? shellPath = null)
     {
@@ -38,7 +61,14 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
     public IReadOnlyList<InteractiveGateSession> GetInteractiveSessions()
     {
         var result = new List<InteractiveGateSession>();
-        if (!WtsEnumerateSessions(IntPtr.Zero, 0, 1, out var buffer, out var count))
+        var enumeration = NativeCall("WTSEnumerateSessionsW", "wtsapi32.dll", () =>
+        {
+            var ok = WtsEnumerateSessions(IntPtr.Zero, 0, 1, out var nativeBuffer, out var nativeCount);
+            return (ok, nativeBuffer, nativeCount);
+        });
+        var buffer = enumeration.nativeBuffer;
+        var count = enumeration.nativeCount;
+        if (!enumeration.ok)
         {
             return result;
         }
@@ -64,7 +94,7 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         }
         finally
         {
-            WtsFreeMemory(buffer);
+            NativeCall("WTSFreeMemory", "wtsapi32.dll", () => WtsFreeMemory(buffer));
         }
         return result;
     }
@@ -99,7 +129,13 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
             errorMessage = $"Shell binary missing: {_shellPath}";
             return false;
         }
-        if (!WtsQueryUserToken((uint)session.SessionId, out var userToken))
+        var tokenResult = NativeCall("WTSQueryUserToken", "wtsapi32.dll", () =>
+        {
+            var ok = WtsQueryUserToken((uint)session.SessionId, out var token);
+            return (ok, token);
+        });
+        var userToken = tokenResult.token;
+        if (!tokenResult.ok)
         {
             errorMessage = new Win32Exception(Marshal.GetLastWin32Error()).Message;
             return false;
@@ -109,46 +145,65 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         IntPtr environment = IntPtr.Zero;
         try
         {
-            if (!DuplicateTokenEx(userToken, MaximumAllowed, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out primaryToken))
+            var duplicateResult = NativeCall("DuplicateTokenEx", "advapi32.dll", () =>
+            {
+                var ok = DuplicateTokenEx(userToken, MaximumAllowed, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out var token);
+                return (ok, token);
+            });
+            primaryToken = duplicateResult.token;
+            if (!duplicateResult.ok)
             {
                 errorMessage = new Win32Exception(Marshal.GetLastWin32Error()).Message;
                 return false;
             }
-            if (!CreateEnvironmentBlock(out environment, primaryToken, false))
+            var environmentResult = NativeCall("CreateEnvironmentBlock", "userenv.dll", () =>
+            {
+                var ok = CreateEnvironmentBlock(out var block, primaryToken, false);
+                return (ok, block);
+            });
+            environment = environmentResult.block;
+            if (!environmentResult.ok)
             {
                 errorMessage = new Win32Exception(Marshal.GetLastWin32Error()).Message;
                 return false;
             }
 
-            var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default" };
+            var startup = new StartupInfo { Size = (uint)Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default" };
             var commandLine = new StringBuilder($"\"{_shellPath}\" --shell");
-            if (!CreateProcessAsUser(
-                    primaryToken,
-                    _shellPath,
-                    commandLine,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    false,
-                    CreateUnicodeEnvironment | CreateNewProcessGroup,
-                    environment,
-                    Path.GetDirectoryName(_shellPath),
-                    ref startup,
-                    out var processInfo))
+            var processResult = NativeCall("CreateProcessAsUserW", "advapi32.dll", () =>
+            {
+                var localStartup = startup;
+                var ok = CreateProcessAsUser(
+                        primaryToken,
+                        _shellPath,
+                        commandLine,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        false,
+                        CreateUnicodeEnvironment | CreateNewProcessGroup,
+                        environment,
+                        Path.GetDirectoryName(_shellPath),
+                        ref localStartup,
+                        out var info);
+                return (ok, info);
+            });
+            var processInfo = processResult.info;
+            if (!processResult.ok)
             {
                 errorMessage = new Win32Exception(Marshal.GetLastWin32Error()).Message;
                 return false;
             }
 
             processId = unchecked((int)processInfo.ProcessId);
-            CloseHandle(processInfo.Thread);
-            CloseHandle(processInfo.Process);
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(processInfo.Thread));
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(processInfo.Process));
             return true;
         }
         finally
         {
-            if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
-            if (primaryToken != IntPtr.Zero) CloseHandle(primaryToken);
-            CloseHandle(userToken);
+            if (environment != IntPtr.Zero) NativeCall("DestroyEnvironmentBlock", "userenv.dll", () => DestroyEnvironmentBlock(environment));
+            if (primaryToken != IntPtr.Zero) NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(primaryToken));
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(userToken));
         }
     }
 
@@ -248,7 +303,13 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
 
     private static string? TryGetSessionSid(int sessionId)
     {
-        if (!WtsQueryUserToken((uint)sessionId, out var token))
+        var tokenResult = NativeCall("WTSQueryUserToken", "wtsapi32.dll", () =>
+        {
+            var ok = WtsQueryUserToken((uint)sessionId, out var nativeToken);
+            return (ok, nativeToken);
+        });
+        var token = tokenResult.nativeToken;
+        if (!tokenResult.ok)
         {
             return null;
         }
@@ -263,7 +324,7 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         }
         finally
         {
-            CloseHandle(token);
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(token));
         }
     }
 
@@ -281,6 +342,92 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         }
     }
 
+    public static void RunNativeApiSmokeTest()
+    {
+        var requiredExports = new Dictionary<string, string[]>
+        {
+            ["wtsapi32.dll"] = ["WTSEnumerateSessionsW", "WTSFreeMemory", "WTSQueryUserToken"],
+            ["advapi32.dll"] = ["DuplicateTokenEx", "CreateProcessAsUserW"],
+            ["userenv.dll"] = ["CreateEnvironmentBlock", "DestroyEnvironmentBlock"],
+            ["kernel32.dll"] = ["CloseHandle"]
+        };
+        foreach (var pair in requiredExports)
+        {
+            if (!NativeLibrary.TryLoad(pair.Key, out var library))
+            {
+                throw new DllNotFoundException(pair.Key);
+            }
+            try
+            {
+                foreach (var api in pair.Value)
+                {
+                    if (!NativeLibrary.TryGetExport(library, api, out _))
+                    {
+                        throw new EntryPointNotFoundException($"{pair.Key}!{api}");
+                    }
+                }
+            }
+            finally
+            {
+                NativeLibrary.Free(library);
+            }
+        }
+
+        var enumeration = NativeCall("WTSEnumerateSessionsW", "wtsapi32.dll", () =>
+        {
+            var ok = WtsEnumerateSessions(IntPtr.Zero, 0, 1, out var buffer, out var count);
+            return (ok, buffer, count);
+        });
+        NativeCall("WTSFreeMemory", "wtsapi32.dll", () => WtsFreeMemory(enumeration.buffer));
+
+        var query = NativeCall("WTSQueryUserToken", "wtsapi32.dll", () =>
+        {
+            var ok = WtsQueryUserToken((uint)Process.GetCurrentProcess().SessionId, out var token);
+            return (ok, token);
+        });
+        if (query.token != IntPtr.Zero)
+        {
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(query.token));
+        }
+
+        var currentToken = System.Security.Principal.WindowsIdentity.GetCurrent().Token;
+        var duplicate = NativeCall("DuplicateTokenEx", "advapi32.dll", () =>
+        {
+            var ok = DuplicateTokenEx(currentToken, MaximumAllowed, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out var token);
+            return (ok, token);
+        });
+        IntPtr environment = IntPtr.Zero;
+        try
+        {
+            var environmentResult = NativeCall("CreateEnvironmentBlock", "userenv.dll", () =>
+            {
+                var ok = CreateEnvironmentBlock(out var block, duplicate.token, false);
+                return (ok, block);
+            });
+            environment = environmentResult.block;
+
+            var startup = new StartupInfo { Size = (uint)Marshal.SizeOf<StartupInfo>(), Desktop = @"winsta0\default" };
+            var commandLine = new StringBuilder("\"Z:\\FaceUnlock-Native-Smoke-Missing.exe\"");
+            NativeCall("CreateProcessAsUserW", "advapi32.dll", () =>
+            {
+                var localStartup = startup;
+                return CreateProcessAsUser(
+                    duplicate.token, "Z:\\FaceUnlock-Native-Smoke-Missing.exe", commandLine,
+                    IntPtr.Zero, IntPtr.Zero, false, CreateUnicodeEnvironment,
+                    environment, null, ref localStartup, out _);
+            });
+        }
+        finally
+        {
+            NativeCall("DestroyEnvironmentBlock", "userenv.dll", () => DestroyEnvironmentBlock(environment));
+            if (duplicate.token != IntPtr.Zero)
+            {
+                NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(duplicate.token));
+            }
+            NativeCall("CloseHandle", "kernel32.dll", () => CloseHandle(IntPtr.Zero));
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct WtsSessionInfo
     {
@@ -292,20 +439,20 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct StartupInfo
     {
-        public int Size;
+        public uint Size;
         public string? Reserved;
         public string? Desktop;
         public string? Title;
-        public int X;
-        public int Y;
-        public int XSize;
-        public int YSize;
-        public int XCountChars;
-        public int YCountChars;
-        public int FillAttribute;
-        public int Flags;
-        public short ShowWindow;
-        public short Reserved2;
+        public uint X;
+        public uint Y;
+        public uint XSize;
+        public uint YSize;
+        public uint XCountChars;
+        public uint YCountChars;
+        public uint FillAttribute;
+        public uint Flags;
+        public ushort ShowWindow;
+        public ushort Reserved2;
         public IntPtr Reserved2Ptr;
         public IntPtr StdInput;
         public IntPtr StdOutput;
@@ -321,30 +468,30 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         public uint ThreadId;
     }
 
-    [DllImport("wtsapi32.dll", EntryPoint = "WTSEnumerateSessionsW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("wtsapi32.dll", EntryPoint = "WTSEnumerateSessionsW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WtsEnumerateSessions(IntPtr server, int reserved, int version, out IntPtr sessionInfo, out int count);
 
-    [DllImport("wtsapi32.dll")]
+    [DllImport("wtsapi32.dll", EntryPoint = "WTSFreeMemory", ExactSpelling = true)]
     private static extern void WtsFreeMemory(IntPtr memory);
 
-    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [DllImport("wtsapi32.dll", EntryPoint = "WTSQueryUserToken", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WtsQueryUserToken(uint sessionId, out IntPtr token);
 
-    [DllImport("advapi32.dll", SetLastError = true)]
+    [DllImport("advapi32.dll", EntryPoint = "DuplicateTokenEx", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DuplicateTokenEx(IntPtr existingToken, uint desiredAccess, IntPtr tokenAttributes, int impersonationLevel, int tokenType, out IntPtr newToken);
 
-    [DllImport("userenv.dll", SetLastError = true)]
+    [DllImport("userenv.dll", EntryPoint = "CreateEnvironmentBlock", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, [MarshalAs(UnmanagedType.Bool)] bool inherit);
 
-    [DllImport("userenv.dll", SetLastError = true)]
+    [DllImport("userenv.dll", EntryPoint = "DestroyEnvironmentBlock", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyEnvironmentBlock(IntPtr environment);
 
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("advapi32.dll", EntryPoint = "CreateProcessAsUserW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateProcessAsUser(
         IntPtr token,
@@ -359,7 +506,7 @@ public sealed class WindowsShellGateSystem : IShellGateSystem
         ref StartupInfo startupInfo,
         out ProcessInformation processInformation);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", EntryPoint = "CloseHandle", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);
 }

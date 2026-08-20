@@ -32,6 +32,7 @@ jobs:
           dotnet restore windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
           dotnet restore windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj
           dotnet restore windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj
+          dotnet restore windows/FaceUnlock.NativeApiSelfTest/FaceUnlock.NativeApiSelfTest.csproj
 
       - name: Build FaceUnlock.Core (Release)
         run: dotnet build windows/FaceUnlock.Core/FaceUnlock.Core.csproj --configuration Release --no-restore
@@ -57,6 +58,9 @@ jobs:
       - name: Run FaceUnlock IPC Integration Tests
         run: dotnet run --project windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj --configuration Release --no-restore
 
+      - name: Run real Windows F.2 native API smoke test
+        run: dotnet run --project windows/FaceUnlock.NativeApiSelfTest/FaceUnlock.NativeApiSelfTest.csproj --configuration Release --no-restore
+
       - name: Test retired security stack upgrade migration
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-LegacyCleanup.ps1
@@ -68,6 +72,16 @@ jobs:
           foreach ($path in $removed) { if (Test-Path $path) { throw "Retired source remains: $path" } }
           $runtime = Get-Content windows/FaceUnlock.Core/Models.cs,windows/FaceUnlock.Service/UnlockWorker.cs -Raw
           if ($runtime -match 'issue_lsa_ticket|LsaMachineSecretStore|lsa_secret_unavailable') { throw 'Retired LSA IPC/runtime reference remains' }
+
+      - name: Test missing/existing service repair and idempotent Setup
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'FaceUnlock-Setup-Regression'
+          New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+          dotnet publish windows/FaceUnlock.Service/FaceUnlock.Service.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $installDir
+          dotnet publish windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $installDir
+          Copy-Item windows/scripts/Setup-Ready.ps1,windows/scripts/Cleanup-PhaseE.ps1,windows/scripts/Enable-ShellGate.ps1,windows/scripts/Disable-ShellGate.ps1,windows/scripts/FaceUnlock-Shell-Recovery.ps1 $installDir
+          powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-SetupReadyRegression.ps1 -InstallDir $installDir
 
       - name: Verify BLE framing source is compiled
         shell: pwsh

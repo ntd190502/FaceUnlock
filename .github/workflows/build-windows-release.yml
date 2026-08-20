@@ -82,6 +82,10 @@ jobs:
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-LegacyCleanup.ps1
 
+      - name: Test Setup missing/existing service repair
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-SetupReadyRegression.ps1 -InstallDir windows/installer/bin
+
       - name: Install Inno Setup & Compile Installer
         shell: pwsh
         run: |

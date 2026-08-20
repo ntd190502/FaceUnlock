@@ -110,3 +110,6 @@
 - Verify only the FaceUnlock CLSID/package is removed; `msv1_0`, Kerberos, and unrelated security packages remain.
 - Verify obsolete files are removed while `FaceUnlockShell.exe` and pairing `config.json` remain.
 - Build the Setup artifact and verify its staging/portable contents contain Agent, Service, Shell, Shell Gate scripts, diagnostics, and migration cleanup, with no retired DLL or enable/disable script.
+- On a real Windows runner, start with `FaceUnlock Service` missing and verify Setup recreates it with the exact path, Automatic start, Running state, and a healthy named-pipe ping.
+- Corrupt an existing service path/start mode, run Setup again, and verify idempotent repair while pairing and Shell Gate state remain preserved.
+- Load and call the real WTS, token, environment, process-launch, and handle bindings used by F.2; any missing export fails CI.
