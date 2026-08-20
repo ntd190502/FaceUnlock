@@ -92,9 +92,9 @@ public sealed class ShellEngine
         Log($"Startup: SID={GetCurrentWindowsUserSid() ?? "(null)"} SessionID={GetCurrentWindowsSessionId()} Mode={_mode}");
         if (!EnsureInputGuard()) return;
         var retryDelay = TimeSpan.FromSeconds(2);
+        SetState(ShellState.INITIALIZING, "Connecting to FaceUnlock Service...");
         while (!ct.IsCancellationRequested && !_explorerStarted)
         {
-            SetState(ShellState.INITIALIZING, "Connecting to FaceUnlock Service...");
             var serviceOk = false;
             for (var i = 0; i < maxRetries && !ct.IsCancellationRequested; i++)
             {
@@ -110,6 +110,11 @@ public sealed class ShellEngine
                 if (!await DelayForRetryAsync(retryDelay, ct)) return;
                 continue;
             }
+
+            // Do not overwrite a useful SERVICE_UNAVAILABLE state until the
+            // service is genuinely reachable again.
+            if (CurrentState == ShellState.SERVICE_UNAVAILABLE)
+                SetState(ShellState.INITIALIZING, "FaceUnlock Service restored. Starting unlock request...");
 
             var approved = await TryStartFaceIdAttemptAsync(ct);
             if (approved || _explorerStarted || ct.IsCancellationRequested) return;
