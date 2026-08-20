@@ -67,7 +67,10 @@ try {
     Set-ItemProperty -Path $winlogon -Name Shell -Value "`"$(Join-Path $InstallDir 'FaceUnlockShell.exe')`" --shell" -Force
 
     & $setup -Mode install -InstallDir $InstallDir
-    if ($LASTEXITCODE -ne 0) { throw "Setup missing-service repair failed (exit=$LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) {
+        Get-Content (Join-Path $dataDir 'logs\installer.log') -Tail 100 -ErrorAction SilentlyContinue
+        throw "Setup missing-service repair failed (exit=$LASTEXITCODE)"
+    }
     Assert-ServiceHealthy
     Assert ((Get-ItemProperty -Path $winlogon -Name Shell).Shell -match 'FaceUnlockShell\.exe') 'Shell Gate preserved after missing-service repair'
     Assert ((Get-FileHash $configPath -Algorithm SHA256).Hash -eq $configHash) 'Pairing config preserved'
@@ -81,7 +84,10 @@ try {
     & "$env:SystemRoot\System32\sc.exe" config $serviceName 'binPath= "C:\FaceUnlock-Wrong-Path.exe"' 'start= demand' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not create wrong-path regression state.' }
     & $setup -Mode install -InstallDir $InstallDir
-    if ($LASTEXITCODE -ne 0) { throw "Setup existing-service repair failed (exit=$LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) {
+        Get-Content (Join-Path $dataDir 'logs\installer.log') -Tail 100 -ErrorAction SilentlyContinue
+        throw "Setup existing-service repair failed (exit=$LASTEXITCODE)"
+    }
     Assert-ServiceHealthy
     Assert ((Get-ItemProperty -Path $winlogon -Name Shell).Shell -match 'FaceUnlockShell\.exe') 'Shell Gate preserved on idempotent second install'
     Assert ((Get-FileHash $configPath -Algorithm SHA256).Hash -eq $configHash -and (Get-FileHash $tokenPath -Algorithm SHA256).Hash -eq $tokenHash) 'Pairing preserved on idempotent second install'
