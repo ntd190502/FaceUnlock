@@ -1,5 +1,6 @@
 ﻿using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.ComponentModel;
 using System.Windows.Threading;
 
@@ -125,6 +126,8 @@ public partial class MainWindow : Window
                 break;
         }
 
+        ApplyStateMotion(state == ShellState.APPROVED || state == ShellState.STARTING_DESKTOP || state == ShellState.TEST_PASS);
+
         // If desktop started successfully in shell mode, wait 1.5s then exit application cleanly
         if (state == ShellState.STARTING_DESKTOP && _engine.Mode == ShellMode.Shell)
         {
@@ -183,6 +186,20 @@ public partial class MainWindow : Window
                 StatusDetail.Text = "Connecting to your iPhone to unlock";
                 break;
         }
+
+        ApplyStateMotion(previewState.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void ApplyStateMotion(bool showSuccess)
+    {
+        SuccessCheck.Visibility = showSuccess ? Visibility.Visible : Visibility.Collapsed;
+
+        StatusVisual.Opacity = 0;
+        StatusMove.Y = 5;
+        var duration = TimeSpan.FromMilliseconds(190);
+        StatusVisual.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, duration));
+        StatusMove.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(5, 0, duration));
+        StatusDetail.BeginAnimation(OpacityProperty, new DoubleAnimation(.25, 1, duration));
     }
 
     private static SolidColorBrush BrushFromRgb(byte red, byte green, byte blue) =>
