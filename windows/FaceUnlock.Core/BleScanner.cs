@@ -73,7 +73,8 @@ public sealed class BleScanner
                 {
                     if (ct.IsCancellationRequested || DateTime.UtcNow >= deadline) break;
                     remaining = deadline - DateTime.UtcNow;
-                    var result = await TryConnectAndApproveAsync(address, payload, expectedDeviceId, remaining, ct);
+                    var deviceTimeout = remaining;
+                    var result = await TryConnectAndApproveAsync(address, payload, expectedDeviceId, deviceTimeout, ct);
                     if (result != null) { BleDiag(payload, "RESPONSE_COMPLETE"); return result; }
                 }
             }
@@ -97,7 +98,6 @@ public sealed class BleScanner
             if (services.Status != GattCommunicationStatus.Success || services.Services.Count == 0 || DateTime.UtcNow >= operationDeadline) { BleDiag(payload, $"SERVICE_FOUND fail status={services.Status} count={services.Services.Count}"); return null; }
             using var service = services.Services[0];
             BleDiag(payload, "SERVICE_FOUND ok");
-
             if (!string.IsNullOrWhiteSpace(expectedDeviceId))
             {
                 var devChars = await service.GetCharacteristicsForUuidAsync(DeviceUuid, BluetoothCacheMode.Uncached);
@@ -110,13 +110,11 @@ public sealed class BleScanner
                 if (!string.Equals(Encoding.UTF8.GetString(idBytes).Trim(), expectedDeviceId, StringComparison.Ordinal)) { BleDiag(payload, "DEVICE_ID mismatch"); return null; }
                 BleDiag(payload, "DEVICE_ID ok");
             }
-
             if (DateTime.UtcNow >= operationDeadline) return null;
             var reqResult = await service.GetCharacteristicsForUuidAsync(RequestUuid, BluetoothCacheMode.Uncached);
             var resResult = await service.GetCharacteristicsForUuidAsync(ResponseUuid, BluetoothCacheMode.Uncached);
             if (reqResult.Status != GattCommunicationStatus.Success || resResult.Status != GattCommunicationStatus.Success || reqResult.Characteristics.Count == 0 || resResult.Characteristics.Count == 0 || DateTime.UtcNow >= operationDeadline) { BleDiag(payload, $"CHARACTERISTICS fail request={reqResult.Status} response={resResult.Status}"); return null; }
             BleDiag(payload, "CHARACTERISTICS ok");
-
             var requestChar = reqResult.Characteristics[0];
             var responseChar = resResult.Characteristics[0];
             var responseTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
