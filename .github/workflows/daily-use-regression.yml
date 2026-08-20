@@ -1,0 +1,80 @@
+name: Daily Use Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - "ios/**"
+      - ".github/workflows/daily-use-regression.yml"
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - "ios/**"
+      - ".github/workflows/daily-use-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-daily-use:
+    name: Windows daily-use build and recovery tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build daily-use components
+        run: |
+          dotnet build windows/FaceUnlock.Core/FaceUnlock.Core.csproj -c Release
+          dotnet build windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj -c Release
+          dotnet build windows/FaceUnlock.Service/FaceUnlock.Service.csproj -c Release
+          dotnet build windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj -c Release
+      - name: Shell lifecycle and desktop recovery harness
+        run: dotnet run --project windows/FaceUnlock.ShellTests/FaceUnlock.ShellTests.csproj -c Release
+      - name: Connectivity, resume-like transitions and Bluetooth lease tests
+        run: dotnet run --project windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj -c Release
+      - name: Verify daily-use implementation contracts
+        shell: pwsh
+        run: |
+          $shell = Get-Content windows/FaceUnlock.Shell/ShellEngine.cs -Raw
+          $agent = Get-Content windows/FaceUnlock.Agent/MainWindow.xaml.cs -Raw
+          $ble = Get-Content windows/FaceUnlock.Core/BleScanner.cs -Raw
+          if ($shell -notmatch 'RetryDesktopWithBackoffAsync') { throw 'Missing Explorer auto-retry' }
+          if ($shell -notmatch 'Retrying automatically') { throw 'Missing Shell retry state' }
+          if ($agent -notmatch 'RestartService_Click') { throw 'Missing Agent service recovery control' }
+          if ($agent -notmatch 'CancellationTokenSource') { throw 'Pair/test cancellation missing' }
+          if ($ble -notmatch 'TimeSpan.FromSeconds\(3\)') { throw 'BLE candidate timeout is not bounded' }
+
+  ios-daily-use:
+    name: iOS full compile and transport regression
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
+      - name: BLE framing and logical biometric tests
+        run: |
+          swiftc ios/FaceUnlock/BLE/BLEFrameCodec.swift ios/scripts/ble_frame_selftest.swift -o "$RUNNER_TEMP/ble_frame_selftest"
+          "$RUNNER_TEMP/ble_frame_selftest"
+          swiftc ios/FaceUnlock/Unlock/LogicalBiometricApprovalCache.swift ios/scripts/logical_unlock_selftest.swift -o "$RUNNER_TEMP/logical_unlock_selftest"
+          "$RUNNER_TEMP/logical_unlock_selftest"
+      - name: Full iOS source build
+        env:
+          BUNDLE_ID: io.faceunlock.app
+        run: |
+          chmod +x ios/scripts/build_trollstore_ipa.sh
+          ios/scripts/build_trollstore_ipa.sh
+          test -f ios/dist/FaceUnlock.ipa
+      - name: Verify queued deep links, adaptive polling and multi-PC offline source
+        run: |
+          grep -q 'queuedOnlineSessionIDs' ios/FaceUnlock/Unlock/UnlockCoordinator.swift
+          grep -q '4_000_000_000' ios/FaceUnlock/Unlock/UnlockCoordinator.swift
+          grep -q 'pairedPCPublicKeys' ios/FaceUnlock/Config.swift
+          grep -q 'requestAssemblers.removeValue' ios/FaceUnlock/BLE/BLEPeripheralManager.swift
