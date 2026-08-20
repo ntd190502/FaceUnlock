@@ -18,6 +18,8 @@ struct OfflineUnlockPayload: Codable {
     let challenge: String
     let expires_at: Int64
     let pc_signature: String
+    let logical_request_id: String?
+    let online_session_id: String?
 }
 
 struct UnlockSession: Codable {

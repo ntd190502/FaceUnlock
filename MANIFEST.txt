@@ -45,9 +45,11 @@
 ./ios/FaceUnlock/Security/KeychainHelper.swift
 ./ios/FaceUnlock/Security/SignatureVerifier.swift
 ./ios/FaceUnlock/Unlock/UnlockCoordinator.swift
+./ios/FaceUnlock/Unlock/LogicalBiometricApprovalCache.swift
 ./ios/README_TELEGRAM_FIX.txt
 ./ios/project.yml
 ./ios/scripts/ble_frame_selftest.swift
+./ios/scripts/logical_unlock_selftest.swift
 ./ios/scripts/build_ipa.sh
 ./ios/scripts/build_signed_ipa_ci.sh
 ./ios/scripts/build_unsigned_ipa.sh
@@ -70,9 +72,11 @@
 ./windows/FaceUnlock.Core/ApiClient.cs
 ./windows/FaceUnlock.Core/BleFrameCodec.cs
 ./windows/FaceUnlock.Core/BleScanner.cs
+./windows/FaceUnlock.Core/BluetoothLeaseManager.cs
 ./windows/FaceUnlock.Core/ConfigStore.cs
 ./windows/FaceUnlock.Core/FaceUnlock.Core.csproj
 ./windows/FaceUnlock.Core/KeyStore.cs
+./windows/FaceUnlock.Core/LogicalUnlockAttempt.cs
 ./windows/FaceUnlock.Core/Models.cs
 ./windows/FaceUnlock.Core/Protocol.cs
 ./windows/FaceUnlock.Service/FaceUnlock.Service.csproj

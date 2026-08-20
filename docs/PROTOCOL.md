@@ -40,11 +40,23 @@ The iPhone pins `pc_id` and `pc_public_key_pem` from this QR and rejects a pair-
   "pc_name": "DESKTOP-PC",
   "challenge": "base64url",
   "expires_at": 0,
-  "pc_signature": "base64-der"
+  "pc_signature": "base64-der",
+  "logical_request_id": "windows-ipc-request-id",
+  "online_session_id": "optional-prior-online-session-id"
 }
 ```
 
+For current Service requests the PC signature covers:
+
+```text
+faceunlock-offline-request-v2|session_id|challenge|pc_id|expires_at|logical_request_id|online_session_id
+```
+
 The iPhone verifies `pc_signature` with the paired PC public key before showing Face ID.
+It may reuse one successful biometric ceremony only when the signed logical or
+online-session alias matches. Fresh BLE session/challenge values still require a
+fresh transport signature. Legacy v1 payloads remain accepted without cross-session
+biometric reuse.
 
 ## BLE service
 

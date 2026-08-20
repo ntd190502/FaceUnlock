@@ -57,6 +57,11 @@
 - Drop one chunk: assembly expires and no approval result is accepted.
 - Corrupt framing metadata (`chunk_count`, kind, or version): request/response is rejected.
 - Ensure maximum message size (>16 KiB) is rejected.
+- Rotate BLE session/challenge values across retries and verify the signed logical request stays constant and iOS biometric prompt count remains exactly one.
+- Start Online, drop Internet, then approve over BLE. Verify the original Windows `request_id` is approved and the abandoned/late online result is ignored.
+- With Bluetooth initially OFF, verify FaceUnlock enables it and restores OFF only after the final request lease releases. With Bluetooth initially ON, verify it remains ON.
+- Run two concurrent owned BLE leases; completing the first must not disable Bluetooth while the second remains active.
+- Reject/cancel an owned BLE request and verify Bluetooth is restored OFF. If auto-enable fails, verify no disable is attempted.
 
 ## G. CoreBluetooth Backpressure
 - Force/observe `updateValue` returning `false` while multiple response chunks are queued.

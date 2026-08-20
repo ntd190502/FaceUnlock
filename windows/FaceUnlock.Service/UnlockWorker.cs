@@ -14,15 +14,14 @@ namespace FaceUnlock.Service;
 public sealed class UnlockWorker : BackgroundService
 {
     private readonly string _pipeName;
-    private const string ServiceVersion = "1.4.0";
+    private const string ServiceVersion = "1.5.0";
     private const long MaxLogSizeBytes = 5 * 1024 * 1024; // 5 MB
 
     private readonly ILogger<UnlockWorker> _log;
     private readonly ConfigStore _configStore;
     private readonly LsaMachineSecretStore _lsaSecretStore;
     private readonly KeyStore _keyStore;
-    private readonly BleScanner _bleScanner;
-    private readonly IBluetoothRadioManager _bluetoothRadioManager;
+    private readonly BluetoothLeaseManager _bluetoothLeaseManager;
     private readonly WindowsInternetMonitor _internetMonitor;
     private readonly SessionGateAuthority _gateAuthority;
     private readonly IShellClientAuthorizer _shellClientAuthorizer;
@@ -73,15 +72,17 @@ public sealed class UnlockWorker : BackgroundService
         string pipeName = "FaceUnlock.Auth.v1",
         SessionGateAuthority? gateAuthority = null,
         IShellClientAuthorizer? shellClientAuthorizer = null,
-        IShellGateWatchdog? shellGateWatchdog = null)
+        IShellGateWatchdog? shellGateWatchdog = null,
+        IBluetoothRadioManager? bluetoothRadioManager = null,
+        BluetoothLeaseManager? bluetoothLeaseManager = null)
     {
         _log = log;
         _pipeName = pipeName;
         _configStore = new ConfigStore();
         _lsaSecretStore = new LsaMachineSecretStore();
         _keyStore = new KeyStore();
-        _bluetoothRadioManager = new WindowsBluetoothRadioManager();
-        _bleScanner = new BleScanner(_bluetoothRadioManager);
+        var radioManager = bluetoothRadioManager ?? new WindowsBluetoothRadioManager();
+        _bluetoothLeaseManager = bluetoothLeaseManager ?? new BluetoothLeaseManager(radioManager, AppendServiceLog);
         _internetMonitor = new WindowsInternetMonitor();
         _internetMonitor.StateChanged += (_, state) => AppendServiceLog($"[INTERNET STATE] {state}");
 
@@ -217,6 +218,8 @@ public sealed class UnlockWorker : BackgroundService
         _log.LogInformation("FaceUnlock Service stopped.");
         AppendServiceLog("FaceUnlock Service stopped.");
         try { await watchdogTask; } catch (OperationCanceledException) { }
+        try { await _bluetoothLeaseManager.ReleaseAllAsync(CancellationToken.None); }
+        catch (Exception ex) { AppendServiceLog($"[BLUETOOTH] shutdown restore failed error={ex.Message}"); }
     }
 
     private static PipeSecurity CreatePipeSecurity()
@@ -435,6 +438,7 @@ public sealed class UnlockWorker : BackgroundService
         {
             _activeGrants.Remove(requestId);
         }
+        ScheduleBluetoothLeaseRelease(requestId, "cancelled");
 
         AppendServiceLog($"[CANCEL_REQUEST ACK] request_id={requestId}");
         return new LocalAuthResponse(1, requestId, LocalAuthStatus.Cancelled, cancelledActive ? "Authentication request cancelled" : "Request cancelled or not active");
@@ -642,6 +646,7 @@ public sealed class UnlockWorker : BackgroundService
             // per-session gate authority is already UNLOCKED before this response.
             grant.State = GrantState.Consumed;
             _activeGrants.Remove(requestId);
+            ScheduleBluetoothLeaseRelease(requestId, "grant_consumed");
 
             if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
             {
@@ -698,7 +703,11 @@ public sealed class UnlockWorker : BackgroundService
     private void PruneExpiredGrants(long nowSec)
     {
         var expiredKeys = _activeGrants.Where(kvp => kvp.Value.ExpiresAt < nowSec).Select(kvp => kvp.Key).ToList();
-        foreach (var k in expiredKeys) _activeGrants.Remove(k);
+        foreach (var k in expiredKeys)
+        {
+            _activeGrants.Remove(k);
+            ScheduleBluetoothLeaseRelease(k, "grant_expired");
+        }
     }
 
     private LocalAuthResponse StartAuthRequest(LocalAuthRequest req, int clientProcessId, CancellationToken stoppingToken)
@@ -831,6 +840,8 @@ public sealed class UnlockWorker : BackgroundService
         var devicePubKey = cfg.DevicePublicKeyPem!;
         var api = new ApiClient(cfg);
         var onlineAttempted = false;
+        var logicalAttempt = new LogicalUnlockAttempt(requestId);
+        string? onlineSessionId = null;
 
         try
         {
@@ -842,13 +853,20 @@ public sealed class UnlockWorker : BackgroundService
                     onlineAttempted = true;
                     _log.LogInformation("Attempting online unlock for request {RequestId}...", requestId);
                     AppendServiceLog($"[TRANSPORT SELECTED] request_id={requestId} transport=Online internet={_internetMonitor.Current}");
-                    var onlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
+                    var onlineResp = await TryOnlineUnlockAsync(
+                        api, cfg, deviceId, devicePubKey,
+                        sessionId => onlineSessionId = sessionId,
+                        cancellationToken);
 
                 if (onlineResp.Status == LocalAuthStatus.Approved)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                    if (!TryRecordFirstApproval(logicalAttempt, "Online", req, deviceId))
+                    {
+                        AppendServiceLog($"[TRANSPORT] request_id={requestId} late Online approval ignored");
+                        return;
+                    }
                     if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
                     {
                         AppendServiceLog($"[SHELL AUTH APPROVED] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1} transport=Online duration={duration:F2}s");
@@ -866,7 +884,8 @@ public sealed class UnlockWorker : BackgroundService
                     SetGrantTerminalState(requestId, onlineResp.Status, onlineResp.Message);
                         return;
                     }
-                    AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} Online->BLE reason={onlineResp.Status}");
+                    AppendServiceLog($"[TRANSPORT] request_id={requestId} Online->BLE reason={onlineResp.Status}");
+                    AppendServiceLog($"[BLE] request_id={requestId} logical_request preserved online_session={onlineSessionId ?? "(none)"}");
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -888,7 +907,7 @@ public sealed class UnlockWorker : BackgroundService
                 _log.LogInformation("Attempting BLE offline unlock for request {RequestId}...", requestId);
                 SetGrantMessage(requestId, "Scanning for iPhone via BLE...");
 
-                var bleResp = await TryBleUnlockAsync(requestId, cfg, deviceId, devicePubKey, !onlineAttempted, cancellationToken);
+                var bleResp = await TryBleUnlockAsync(logicalAttempt, onlineSessionId, cfg, deviceId, devicePubKey, !onlineAttempted, cancellationToken);
                 var duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
 
                 // If the request began offline and connectivity returned during the
@@ -896,17 +915,24 @@ public sealed class UnlockWorker : BackgroundService
                 // to a transport that has already been attempted for this request.
                 if (bleResp.Status == LocalAuthStatus.InternetRestored && !onlineAttempted)
                 {
-                    AppendServiceLog($"[TRANSPORT SWITCH] request_id={requestId} BLE->Online reason=InternetRestored");
+                    AppendServiceLog($"[TRANSPORT] request_id={requestId} BLE->Online reason=InternetRestored");
                     SetGrantMessage(requestId, "Internet restored; contacting iPhone online...");
                     try
                     {
                         onlineAttempted = true;
-                        var restoredOnlineResp = await TryOnlineUnlockAsync(api, cfg, deviceId, devicePubKey, cancellationToken);
+                        var restoredOnlineResp = await TryOnlineUnlockAsync(
+                            api, cfg, deviceId, devicePubKey,
+                            sessionId => onlineSessionId = sessionId,
+                            cancellationToken);
                         if (restoredOnlineResp.Status == LocalAuthStatus.Approved)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             duration = (DateTimeOffset.UtcNow - start).TotalSeconds;
-                            RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                            if (!TryRecordFirstApproval(logicalAttempt, "Online", req, deviceId))
+                            {
+                                AppendServiceLog($"[TRANSPORT] request_id={requestId} late Online approval ignored");
+                                return;
+                            }
                             AppendServiceLog($"[APPROVED] request_id={requestId} device_id={deviceId} transport=Online duration={duration:F2}s verify=PASS grant_ttl=30s");
                             return;
                         }
@@ -921,7 +947,11 @@ public sealed class UnlockWorker : BackgroundService
                 if (bleResp.Status == LocalAuthStatus.Approved)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var localGrantExp = RecordGrant(requestId, req.user_sid, req.qualified_username ?? req.username, deviceId, req.session_id, req.client_type, req.pc_id);
+                    if (!TryRecordFirstApproval(logicalAttempt, "BLE", req, deviceId))
+                    {
+                        AppendServiceLog($"[BLE] request_id={requestId} duplicate/late approval ignored");
+                        return;
+                    }
                     if (string.Equals(req.client_type, "shell", StringComparison.OrdinalIgnoreCase))
                     {
                         AppendServiceLog($"[SHELL AUTH APPROVED] request_id={requestId} user_sid={req.user_sid ?? "(none)"} session_id={req.session_id ?? -1} transport=BLE duration={duration:F2}s");
@@ -994,6 +1024,7 @@ public sealed class UnlockWorker : BackgroundService
                 grant.LastMessage = message;
             }
         }
+        ScheduleBluetoothLeaseRelease(requestId, $"auth_{status}");
     }
 
     private async Task<(string Status, string? Message, long? ExpiresAt)> TryOnlineUnlockAsync(
@@ -1001,9 +1032,11 @@ public sealed class UnlockWorker : BackgroundService
         LocalConfig cfg,
         string deviceId,
         string devicePubKey,
+        Action<string> onSessionCreated,
         CancellationToken stoppingToken)
     {
         var r = await api.RequestUnlockAsync(deviceId, stoppingToken);
+        onSessionCreated(r.session_id);
         var deadline = DateTimeOffset.FromUnixTimeSeconds(r.expires_at);
 
         while (DateTimeOffset.UtcNow < deadline && !stoppingToken.IsCancellationRequested)
@@ -1050,24 +1083,35 @@ public sealed class UnlockWorker : BackgroundService
     }
 
     private async Task<(string Status, string? Message, long? ExpiresAt)> TryBleUnlockAsync(
-        string requestId,
+        LogicalUnlockAttempt logicalAttempt,
+        string? onlineSessionId,
         LocalConfig cfg,
         string deviceId,
         string devicePubKey,
         bool switchToOnlineWhenInternetRestored,
         CancellationToken stoppingToken)
     {
-        var loop = new BleConnectivityWaitLoop(_bluetoothRadioManager, _internetMonitor);
+        var requestId = logicalAttempt.RequestId;
+        var leasedRadio = _bluetoothLeaseManager.ForRequest(requestId);
+        var loop = new BleConnectivityWaitLoop(leasedRadio, _internetMonitor);
+        var scanner = new BleScanner(leasedRadio);
         var wait = await loop.WaitAsync(async scanToken =>
         {
+            if (logicalAttempt.IsApproved)
+            {
+                AppendServiceLog($"[BLE] request_id={requestId} duplicate/late scan suppressed state=Approved");
+                return null;
+            }
             // Keep the IPC request and its one worker intact. Each 9-second scan
             // gets a fresh short-lived signed BLE payload so a late iPhone is safe.
             var session = Guid.NewGuid().ToString("N");
             var challenge = Protocol.RandomToken();
             var exp = DateTimeOffset.UtcNow.AddSeconds(45).ToUnixTimeSeconds();
-            var canonical = Protocol.OfflineRequestCanonical(session, challenge, cfg.PcId, exp);
-            var payload = new OfflineUnlockPayload("faceunlock-offline-v1", session, cfg.PcId, cfg.PcName, challenge, exp, _keyStore.SignBase64(canonical));
-            var response = await _bleScanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(9), scanToken);
+            var canonical = Protocol.OfflineRequestCanonical(session, challenge, cfg.PcId, exp, requestId, onlineSessionId);
+            var payload = new OfflineUnlockPayload(
+                "faceunlock-offline-v1", session, cfg.PcId, cfg.PcName, challenge, exp,
+                _keyStore.SignBase64(canonical), requestId, onlineSessionId);
+            var response = await scanner.DiscoverAndApproveAsync(payload, deviceId, TimeSpan.FromSeconds(9), scanToken);
             return response is null ? null : new BleApprovalEnvelope(response, session, challenge, exp);
         }, switchToOnlineWhenInternetRestored, (state, attempt, radio) =>
         {
@@ -1239,12 +1283,32 @@ public sealed class UnlockWorker : BackgroundService
 
             // Mark grant consumed
             grant.State = GrantState.Consumed;
+            ScheduleBluetoothLeaseRelease(requestId, "lsa_ticket_issued");
 
             var ticketBase64 = Convert.ToBase64String(fullBuffer);
             AppendServiceLog($"[ISSUE_LSA_TICKET SUCCESS] request_id={requestId} user_sid={userSid} account={accountName} issued_at={issuedAt} expires_at={expiresAt}");
 
             return new LocalAuthResponse(1, requestId, LocalAuthStatus.Approved, "lsa_ticket_issued", expiresAt, ServiceVersion, ticketBase64);
         }
+    }
+
+    private bool TryRecordFirstApproval(LogicalUnlockAttempt attempt, string transport, LocalAuthRequest req, string deviceId)
+    {
+        if (!attempt.TryAcceptApproval(transport))
+            return false;
+
+        RecordGrant(
+            attempt.RequestId,
+            req.user_sid,
+            req.qualified_username ?? req.username,
+            deviceId,
+            req.session_id,
+            req.client_type,
+            req.pc_id);
+        if (string.Equals(transport, "BLE", StringComparison.Ordinal))
+            AppendServiceLog($"[BLE] request_id={attempt.RequestId} first approval accepted");
+        AppendServiceLog($"[TRANSPORT] request_id={attempt.RequestId} first approval accepted transport={transport}");
+        return true;
     }
 
     private long RecordGrant(string requestId, string? userSid = null, string? qualifiedUser = null, string? deviceId = null, int? sessionId = null, string? clientType = null, string? pcId = null)
@@ -1315,6 +1379,22 @@ public sealed class UnlockWorker : BackgroundService
     {
         AppendServiceLog($"[GATE] invalidating stale shell request_id={requestId}");
         CancelRequest(requestId);
+    }
+
+    private void ScheduleBluetoothLeaseRelease(string requestId, string reason)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                AppendServiceLog($"[BLUETOOTH] request_id={requestId} cleanup reason={reason}");
+                await _bluetoothLeaseManager.ReleaseAsync(requestId, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                AppendServiceLog($"[BLUETOOTH] request_id={requestId} restore_off=FAILED error={ex.Message}");
+            }
+        });
     }
 
     private static int GetClientProcessId(NamedPipeServerStream pipe)

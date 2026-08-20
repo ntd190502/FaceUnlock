@@ -23,6 +23,25 @@ public sealed class TestNoOpWatchdog : IShellGateWatchdog
     public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
+public sealed class TestBluetoothRadioManager : IBluetoothRadioManager
+{
+    public BluetoothState State { get; private set; } = BluetoothState.Disabled;
+    public int DisableCalls { get; private set; }
+
+    public Task<BluetoothRadioStatus> GetStateAsync(CancellationToken ct = default) =>
+        Task.FromResult(new BluetoothRadioStatus(State));
+
+    public Task<BluetoothRadioStatus> SetEnabledAsync(bool enabled, CancellationToken ct = default)
+    {
+        State = enabled ? BluetoothState.Enabled : BluetoothState.Disabled;
+        if (!enabled) DisableCalls++;
+        return Task.FromResult(new BluetoothRadioStatus(State, enabled));
+    }
+
+    public async Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default) =>
+        State == BluetoothState.Enabled ? new BluetoothRadioStatus(State) : await SetEnabledAsync(true, ct);
+}
+
 public class Program
 {
     private const string PipeName = "FaceUnlock.Auth.Test";
@@ -35,7 +54,16 @@ public class Program
 
         var cts = new CancellationTokenSource();
         var gateAuthority = new SessionGateAuthority();
-        var worker = new UnlockWorker(NullLogger<UnlockWorker>.Instance, PipeName, gateAuthority, new TestShellClientAuthorizer(), new TestNoOpWatchdog());
+        var testRadio = new TestBluetoothRadioManager();
+        var testBluetoothLeases = new BluetoothLeaseManager(testRadio);
+        var worker = new UnlockWorker(
+            NullLogger<UnlockWorker>.Instance,
+            PipeName,
+            gateAuthority,
+            new TestShellClientAuthorizer(),
+            new TestNoOpWatchdog(),
+            testRadio,
+            testBluetoothLeases);
         var clientProcessId = Environment.ProcessId;
 
         // Start UnlockWorker as background task
@@ -189,6 +217,7 @@ public class Program
             Console.WriteLine("\n[Test M] Shell reserve_grant and consume_grant");
             var reqIdM = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdM, "S-1-5-21-99999", 2);
+            await testBluetoothLeases.EnsureEnabledAsync(reqIdM);
             worker.InjectApprovedGrantForTesting(reqIdM, "S-1-5-21-99999", "TEST\\ShellUser", "device-test-shell", nowSec + 30, sessionId: 2, clientType: "shell");
             
             var reserveRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
@@ -197,6 +226,9 @@ public class Program
 
             var consumeRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
             Check(consumeRespM != null && consumeRespM.status == LocalAuthStatus.Consumed, "TEST M: Shell consume_grant succeeds", $"status={consumeRespM?.status}");
+            for (var i = 0; i < 20 && testRadio.State != BluetoothState.Disabled; i++) await Task.Delay(10);
+            Check(testRadio.State == BluetoothState.Disabled && testRadio.DisableCalls == 1,
+                "TEST M: Consumed grant restores FaceUnlock-owned Bluetooth OFF");
 
             // TEST N: Shell consume_grant on already consumed grant (replay) is rejected
             Console.WriteLine("\n[Test N] Shell consume_grant replay rejection");

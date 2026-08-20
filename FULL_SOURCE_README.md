@@ -2,6 +2,11 @@
 
 This archive is a full source tree, not an overlay.
 
+Connectivity hardening keeps Online and BLE under one logical Windows request.
+Fresh BLE challenges no longer imply another biometric ceremony, and a
+FaceUnlock-owned Bluetooth auto-enable is restored only after the final request
+lease ends. Bluetooth that was already enabled remains externally owned.
+
 ## Configure before running
 
 1. Copy `hosting/config.example.php` to `hosting/config.php`.

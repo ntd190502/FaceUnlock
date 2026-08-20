@@ -9,7 +9,8 @@ public enum BluetoothState { Unavailable, Disabled, Enabled, AccessDenied, Error
 public sealed record BluetoothRadioStatus(
     BluetoothState State,
     bool AutoEnableAttempted = false,
-    string? Message = null);
+    string? Message = null,
+    long StateVersion = 0);
 
 public interface IInternetMonitor
 {
@@ -54,13 +55,32 @@ public sealed class WindowsInternetMonitor : IInternetMonitor, IDisposable
 
 public interface IBluetoothRadioManager
 {
+    Task<BluetoothRadioStatus> GetStateAsync(CancellationToken ct = default);
+    Task<BluetoothRadioStatus> SetEnabledAsync(bool enabled, CancellationToken ct = default);
     Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default);
 }
 
 public sealed class WindowsBluetoothRadioManager : IBluetoothRadioManager
 {
-    public async Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default)
+    private readonly SemaphoreSlim _accessSync = new(1, 1);
+    private readonly object _stateSync = new();
+    private Radio? _radio;
+    private RadioState? _expectedFaceUnlockState;
+    private DateTimeOffset _expectedStateDeadline;
+    private long _externalStateVersion;
+
+    public Task<BluetoothRadioStatus> GetStateAsync(CancellationToken ct = default) =>
+        AccessRadioAsync(null, ct);
+
+    public Task<BluetoothRadioStatus> SetEnabledAsync(bool enabled, CancellationToken ct = default) =>
+        AccessRadioAsync(enabled, ct);
+
+    public Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default) =>
+        AccessRadioAsync(true, ct);
+
+    private async Task<BluetoothRadioStatus> AccessRadioAsync(bool? enabled, CancellationToken ct)
     {
+        await _accessSync.WaitAsync(ct);
         try
         {
             var access = await Radio.RequestAccessAsync();
@@ -71,17 +91,74 @@ public sealed class WindowsBluetoothRadioManager : IBluetoothRadioManager
             var radio = radios.FirstOrDefault(r => r.Kind == RadioKind.Bluetooth);
             if (radio is null)
                 return new(BluetoothState.Unavailable, false, "No Bluetooth radio was detected");
-            if (radio.State == RadioState.On)
-                return new(BluetoothState.Enabled);
+            TrackRadio(radio);
+
+            var current = radio.State == RadioState.On ? BluetoothState.Enabled : BluetoothState.Disabled;
+            if (!enabled.HasValue || (enabled.Value && current == BluetoothState.Enabled)
+                || (!enabled.Value && current == BluetoothState.Disabled))
+                return new(current, StateVersion: ReadStateVersion());
 
             ct.ThrowIfCancellationRequested();
-            var setResult = await radio.SetStateAsync(RadioState.On);
-            return setResult == RadioAccessStatus.Allowed && radio.State == RadioState.On
-                ? new(BluetoothState.Enabled, true, "Bluetooth enabled automatically")
-                : new(BluetoothState.Disabled, true, $"Windows refused Bluetooth auto-enable: {setResult}");
+            var target = enabled.Value ? RadioState.On : RadioState.Off;
+            lock (_stateSync)
+            {
+                _expectedFaceUnlockState = target;
+                _expectedStateDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+            }
+            var setResult = await radio.SetStateAsync(target);
+            var state = radio.State == RadioState.On ? BluetoothState.Enabled : BluetoothState.Disabled;
+            var succeeded = setResult == RadioAccessStatus.Allowed && radio.State == target;
+            if (!succeeded)
+            {
+                lock (_stateSync) _expectedFaceUnlockState = null;
+            }
+            if (enabled.Value)
+            {
+                return succeeded
+                    ? new(BluetoothState.Enabled, true, "Bluetooth enabled automatically", ReadStateVersion())
+                    : new(state, true, $"Windows refused Bluetooth auto-enable: {setResult}", ReadStateVersion());
+            }
+            return succeeded
+                ? new(BluetoothState.Disabled, false, "Bluetooth restored to off", ReadStateVersion())
+                : new(state, false, $"Windows refused Bluetooth disable: {setResult}", ReadStateVersion());
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return new(BluetoothState.Error, false, ex.Message); }
+        finally { _accessSync.Release(); }
+    }
+
+    private void TrackRadio(Radio radio)
+    {
+        lock (_stateSync)
+        {
+            if (ReferenceEquals(_radio, radio))
+                return;
+            if (_radio != null)
+                _radio.StateChanged -= OnRadioStateChanged;
+            _radio = radio;
+            _radio.StateChanged += OnRadioStateChanged;
+        }
+    }
+
+    private void OnRadioStateChanged(Radio sender, object args)
+    {
+        lock (_stateSync)
+        {
+            if (_expectedFaceUnlockState.HasValue
+                && sender.State == _expectedFaceUnlockState.Value
+                && DateTimeOffset.UtcNow <= _expectedStateDeadline)
+            {
+                _expectedFaceUnlockState = null;
+                return;
+            }
+            _expectedFaceUnlockState = null;
+            _externalStateVersion++;
+        }
+    }
+
+    private long ReadStateVersion()
+    {
+        lock (_stateSync) return _externalStateVersion;
     }
 }
 

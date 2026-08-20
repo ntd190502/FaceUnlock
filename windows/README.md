@@ -8,6 +8,11 @@
 
 Start with the Agent. Do not install the Credential Provider until online/BLE approval tests pass.
 
+Online and BLE are transports for the same logical Windows request. BLE retries
+rotate cryptographic sessions without creating another Face ID ceremony. Bluetooth
+auto-enable uses per-request leases: the last owned lease restores an initially-OFF
+radio, while an initially-ON radio remains untouched.
+
 ## Shell Gate security boundary
 
 FaceUnlock Phase F is a post-logon Shell Gate. While approval is pending, a scoped

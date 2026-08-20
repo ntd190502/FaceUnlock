@@ -42,6 +42,8 @@ If FaceUnlock is already active, it polls `/v1/unlock/pending`. A new device-bou
 - Windows request frames default to 20 bytes (minimum-ATT-MTU safe).
 - iOS reassembles the request, verifies the PC signature, runs Face ID, signs the response, and sends response chunks with CoreBluetooth backpressure handling.
 - If automatic BLE discovery misses, Windows shows a signed QR payload. The iPhone validates it, caches one biometric approval, advertises again, and Windows reconnects to the same paired Device ID.
+- Online and BLE crypto sessions share one signed logical Windows request, so transport switching or BLE response retry does not require a second Face ID approval.
+- Bluetooth is restored to OFF only when FaceUnlock changed it from OFF to ON; an initially enabled radio remains enabled.
 
 See `docs/PROTOCOL.md` for the framing format.
 

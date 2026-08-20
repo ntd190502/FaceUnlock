@@ -59,6 +59,21 @@ scanner and one IPC request ID. Pending grants do not expire while this loop is
 active; approval grants remain limited to 30 seconds. Explicit cancellation or
 service shutdown cancels the active scan immediately.
 
+Every transport belongs to one `LogicalUnlockAttempt` keyed by the Windows
+`request_id`. Fresh BLE sessions and challenges remain mandatory for replay
+resistance, but their signed payload also carries the logical request and the
+prior online session ID. iOS caches one successful biometric ceremony for those
+signed aliases, so retrying a BLE crypto exchange or switching Online -> BLE does
+not prompt Face ID twice. The first valid transport approval wins; later results
+cannot overwrite the grant.
+
+Bluetooth activation is managed by request leases. If FaceUnlock itself changes
+the radio from OFF to ON, the last active lease restores it to OFF after consume,
+cancel, rejection, timeout, or expiry. A radio that was already ON is classified
+as externally owned and is never disabled by FaceUnlock.
+Windows radio state-change generations revoke that ownership conservatively when
+the user or another component changes Bluetooth during the lease.
+
 ```text
 Windows scans for FaceUnlock BLE service
     -> connects to a candidate

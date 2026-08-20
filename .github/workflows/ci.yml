@@ -188,3 +188,11 @@ jobs:
             ios/scripts/ble_frame_selftest.swift \
             -o "$RUNNER_TEMP/ble_frame_selftest"
           "$RUNNER_TEMP/ble_frame_selftest"
+
+      - name: Compile and run logical unlock biometric self-test
+        run: |
+          swiftc \
+            ios/FaceUnlock/Unlock/LogicalBiometricApprovalCache.swift \
+            ios/scripts/logical_unlock_selftest.swift \
+            -o "$RUNNER_TEMP/logical_unlock_selftest"
+          "$RUNNER_TEMP/logical_unlock_selftest"

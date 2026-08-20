@@ -9,6 +9,7 @@ final class UnlockCoordinator: ObservableObject {
     @Published var isBusy = false
 
     private var offlineApprovals: [String: Data] = [:]
+    private let biometricApprovalCache = LogicalBiometricApprovalCache()
 
     private init() {
         _ = BLEPeripheralManager.shared
@@ -42,7 +43,12 @@ final class UnlockCoordinator: ObservableObject {
 
         do {
             let s = try await APIClient.shared.fetchSession(sessionID)
-            try await FaceAuth.authenticate(reason: "Unlock \(s.pc_name)")
+            try await authenticateOnce(
+                logicalIDs: [s.session_id],
+                pcID: s.pc_id,
+                expiresAt: s.expires_at,
+                reason: "Unlock \(s.pc_name)"
+            )
 
             let canonical = Self.canonical(
                 sessionID: s.session_id,
@@ -204,7 +210,12 @@ final class UnlockCoordinator: ObservableObject {
             )
         }
 
-        let unsigned = "faceunlock-offline-request-v1|\(payload.session_id)|\(payload.challenge)|\(payload.pc_id)|\(payload.expires_at)"
+        let unsigned: String
+        if let logicalRequestID = payload.logical_request_id, !logicalRequestID.isEmpty {
+            unsigned = "faceunlock-offline-request-v2|\(payload.session_id)|\(payload.challenge)|\(payload.pc_id)|\(payload.expires_at)|\(logicalRequestID)|\(payload.online_session_id ?? "")"
+        } else {
+            unsigned = "faceunlock-offline-request-v1|\(payload.session_id)|\(payload.challenge)|\(payload.pc_id)|\(payload.expires_at)"
+        }
 
         guard let sig = Data(base64Encoded: payload.pc_signature),
               SignatureVerifier.verifyPEM(
@@ -219,7 +230,29 @@ final class UnlockCoordinator: ObservableObject {
             )
         }
 
-        try await FaceAuth.authenticate(reason: "Unlock \(payload.pc_name) offline")
+        var logicalIDs = [payload.logical_request_id ?? payload.session_id]
+        if let onlineSessionID = payload.online_session_id, !onlineSessionID.isEmpty {
+            logicalIDs.append(onlineSessionID)
+        }
+        try await authenticateOnce(
+            logicalIDs: logicalIDs,
+            pcID: payload.pc_id,
+            expiresAt: payload.expires_at,
+            reason: "Unlock \(payload.pc_name) offline"
+        )
+    }
+
+    private func authenticateOnce(
+        logicalIDs: [String],
+        pcID: String,
+        expiresAt: Int64,
+        reason: String
+    ) async throws {
+        let keys = Array(Set(logicalIDs.filter { !$0.isEmpty }.map { "\(pcID)|\($0)" }))
+        let payloadExpiry = Date(timeIntervalSince1970: TimeInterval(expiresAt))
+        _ = try await biometricApprovalCache.authorize(keys: keys, expiresAt: payloadExpiry) {
+            try await FaceAuth.authenticate(reason: reason)
+        }
     }
 
     static func canonical(

@@ -180,6 +180,68 @@ public class Program
                 try { await shutdownTask; Check(false, "Test 15: Shell shutdown stops loop cleanly"); }
                 catch (OperationCanceledException) { Check(true, "Test 15: Shell shutdown stops loop cleanly"); }
             }
+
+            var logicalAttempt = new LogicalUnlockAttempt("logical-request-1");
+            Check(logicalAttempt.TryAcceptApproval("BLE")
+                && !logicalAttempt.TryAcceptApproval("Online")
+                && logicalAttempt.ApprovedTransport == "BLE",
+                "Test 16: First valid transport approval wins and late approval is ignored");
+
+            var logicalCanonicalA = Protocol.OfflineRequestCanonical("ble-a", "challenge-a", "pc-1", 100, logicalAttempt.RequestId, "online-1");
+            var logicalCanonicalB = Protocol.OfflineRequestCanonical("ble-b", "challenge-b", "pc-1", 101, logicalAttempt.RequestId, "online-1");
+            Check(logicalCanonicalA != logicalCanonicalB
+                && logicalCanonicalA.Contains(logicalAttempt.RequestId, StringComparison.Ordinal)
+                && logicalCanonicalB.Contains(logicalAttempt.RequestId, StringComparison.Ordinal),
+                "Test 17: Fresh BLE crypto sessions preserve one signed logical request");
+
+            var initiallyOff = new LeaseRadioManager(BluetoothState.Disabled);
+            var offLeases = new BluetoothLeaseManager(initiallyOff);
+            var offLease = await offLeases.EnsureEnabledAsync("off-success");
+            await offLeases.ReleaseAsync("off-success");
+            Check(!offLease.WasInitiallyEnabled && offLease.AutoEnabledByFaceUnlock
+                && initiallyOff.State == BluetoothState.Disabled && initiallyOff.DisableCalls == 1,
+                "Test 18: Initially OFF Bluetooth is restored OFF after owned lease release");
+
+            var initiallyOn = new LeaseRadioManager(BluetoothState.Enabled);
+            var onLeases = new BluetoothLeaseManager(initiallyOn);
+            var onLease = await onLeases.EnsureEnabledAsync("on-success");
+            await onLeases.ReleaseAsync("on-success");
+            Check(onLease.WasInitiallyEnabled && !onLease.AutoEnabledByFaceUnlock
+                && initiallyOn.State == BluetoothState.Enabled && initiallyOn.DisableCalls == 0,
+                "Test 19: Initially ON Bluetooth remains ON after unlock");
+
+            var cancelledRadio = new LeaseRadioManager(BluetoothState.Disabled);
+            var cancelledLeases = new BluetoothLeaseManager(cancelledRadio);
+            await cancelledLeases.EnsureEnabledAsync("cancelled");
+            await cancelledLeases.ReleaseAsync("cancelled");
+            Check(cancelledRadio.State == BluetoothState.Disabled && cancelledRadio.DisableCalls == 1,
+                "Test 20: Cancelled owned request restores Bluetooth OFF");
+
+            var failedEnableRadio = new LeaseRadioManager(BluetoothState.Disabled, allowEnable: false);
+            var failedEnableLeases = new BluetoothLeaseManager(failedEnableRadio);
+            var failedLease = await failedEnableLeases.EnsureEnabledAsync("enable-failed");
+            await failedEnableLeases.ReleaseAsync("enable-failed");
+            Check(!failedLease.AutoEnabledByFaceUnlock && failedEnableRadio.DisableCalls == 0,
+                "Test 21: Failed auto-enable never attempts disable");
+
+            var sharedRadio = new LeaseRadioManager(BluetoothState.Disabled);
+            var sharedLeases = new BluetoothLeaseManager(sharedRadio);
+            await sharedLeases.EnsureEnabledAsync("request-a");
+            await sharedLeases.EnsureEnabledAsync("request-b");
+            await sharedLeases.ReleaseAsync("request-a");
+            var stayedOnForSecond = sharedRadio.State == BluetoothState.Enabled && sharedRadio.DisableCalls == 0;
+            await sharedLeases.ReleaseAsync("request-b");
+            Check(stayedOnForSecond && sharedRadio.State == BluetoothState.Disabled && sharedRadio.DisableCalls == 1,
+                "Test 22: Shared Bluetooth stays ON until last active lease releases");
+
+            var userOverrideRadio = new LeaseRadioManager(BluetoothState.Disabled);
+            var userOverrideLeases = new BluetoothLeaseManager(userOverrideRadio);
+            await userOverrideLeases.EnsureEnabledAsync("user-override");
+            userOverrideRadio.ExternalSet(BluetoothState.Disabled);
+            userOverrideRadio.ExternalSet(BluetoothState.Enabled);
+            await userOverrideLeases.ReleaseAsync("user-override");
+            Check(userOverrideRadio.State == BluetoothState.Enabled && userOverrideRadio.DisableCalls == 0,
+                "Test 23: External Bluetooth state change revokes FaceUnlock disable ownership");
         }
         finally
         {
@@ -210,11 +272,59 @@ public class Program
         private readonly Queue<BluetoothState> _states;
         public int Calls { get; private set; }
         public FakeRadioManager(params BluetoothState[] states) => _states = new Queue<BluetoothState>(states);
+        public Task<BluetoothRadioStatus> GetStateAsync(CancellationToken ct = default) =>
+            Task.FromResult(new BluetoothRadioStatus(_states.Peek()));
+        public Task<BluetoothRadioStatus> SetEnabledAsync(bool enabled, CancellationToken ct = default) =>
+            Task.FromResult(new BluetoothRadioStatus(enabled ? BluetoothState.Enabled : BluetoothState.Disabled));
         public Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default)
         {
             Calls++;
             var state = _states.Count > 1 ? _states.Dequeue() : _states.Peek();
             return Task.FromResult(new BluetoothRadioStatus(state));
+        }
+    }
+
+    private sealed class LeaseRadioManager : IBluetoothRadioManager
+    {
+        private readonly bool _allowEnable;
+        private long _stateVersion;
+        public BluetoothState State { get; private set; }
+        public int EnableCalls { get; private set; }
+        public int DisableCalls { get; private set; }
+
+        public LeaseRadioManager(BluetoothState initialState, bool allowEnable = true)
+        {
+            State = initialState;
+            _allowEnable = allowEnable;
+        }
+
+        public Task<BluetoothRadioStatus> GetStateAsync(CancellationToken ct = default) =>
+            Task.FromResult(new BluetoothRadioStatus(State, StateVersion: _stateVersion));
+
+        public Task<BluetoothRadioStatus> SetEnabledAsync(bool enabled, CancellationToken ct = default)
+        {
+            if (enabled)
+            {
+                EnableCalls++;
+                if (_allowEnable) State = BluetoothState.Enabled;
+            }
+            else
+            {
+                DisableCalls++;
+                State = BluetoothState.Disabled;
+            }
+            return Task.FromResult(new BluetoothRadioStatus(State, enabled && _allowEnable, StateVersion: _stateVersion));
+        }
+
+        public async Task<BluetoothRadioStatus> EnsureEnabledAsync(CancellationToken ct = default) =>
+            State == BluetoothState.Enabled
+                ? new BluetoothRadioStatus(State)
+                : await SetEnabledAsync(true, ct);
+
+        public void ExternalSet(BluetoothState state)
+        {
+            State = state;
+            _stateVersion++;
         }
     }
 }

@@ -8,7 +8,16 @@ public record UnlockRequest(string? device_id = null);
 public record UnlockRequestResponse(bool ok, string session_id, string challenge, long expires_at, bool push_sent, string? push_error, string? device_id = null);
 public record UnlockStatusResponse(bool ok, string session_id, string status, string challenge, long expires_at, string? signature, string device_public_key_pem, string? device_id = null);
 public record RevokeDeviceResponse(bool ok, bool revoked, string device_id);
-public record OfflineUnlockPayload(string type, string session_id, string pc_id, string pc_name, string challenge, long expires_at, string pc_signature);
+public record OfflineUnlockPayload(
+    string type,
+    string session_id,
+    string pc_id,
+    string pc_name,
+    string challenge,
+    long expires_at,
+    string pc_signature,
+    string? logical_request_id = null,
+    string? online_session_id = null);
 public record OfflineBleResponse(string ok, string? session_id, string? signature, string? error);
 
 // Local IPC models for CredentialProvider / Shell <-> FaceUnlock.Service
