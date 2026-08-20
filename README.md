@@ -60,6 +60,7 @@ FaceUnlock implements a **Post-Logon Windows Shell Gate** (`FaceUnlockShell.exe`
 
 ### Security Boundary & Architecture Notice
 - **Not a Windows Hello / LSA Passwordless Replacement**: This is a **Post-Logon Shell Gate**, not an LSA security boundary. The Windows session is established before the Shell Gate executes.
+- **User-mode input boundary**: While locked, the Shell blocks common Win/Alt/Ctrl escape shortcuts and rejects window close requests. Ctrl+Alt+Del is the Windows Secure Attention Sequence and cannot be blocked by this user-mode guard. Administrative/Secure Attention recovery can bypass the gate by design.
 - **Phase E Deprecation**: Phase E (custom LSA Authentication Package `FaceUnlockAuthPackage.dll`) is **deprecated/experimental** due to modern Windows LSA Protection blocking unsigned third-party Authentication Packages. Phase F Shell Gate is the recommended architecture.
 - Built-in Windows PIN and password providers remain fully functional as safe recovery paths.
 

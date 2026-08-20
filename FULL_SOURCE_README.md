@@ -25,3 +25,8 @@ Credential Provider and Authentication Package compatibility/harness source,
 installer source, and release scripts. Pairing stores the PC token in the DPAPI
 protected `pctoken.dpapi` store; it is never part of the source archive or config
 template. Explorer launches only after an approved grant is consumed.
+
+The Phase F Shell Gate uses a lifetime-scoped user-mode input guard for common
+escape shortcuts while approval is pending. Ctrl+Alt+Del is Windows Secure
+Attention Sequence and is not blockable in user mode; administrative/Secure
+Attention recovery can bypass this post-logon gate by design.

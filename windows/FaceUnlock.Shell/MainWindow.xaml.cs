@@ -1,11 +1,14 @@
 ﻿using System.Windows;
 using System.Windows.Media;
+using System.ComponentModel;
+using System.Windows.Threading;
 
 namespace FaceUnlock.Shell;
 
 public partial class MainWindow : Window
 {
     private readonly ShellEngine _engine;
+    private bool _focusReclaimPending;
 
     public MainWindow(ShellEngine engine)
     {
@@ -20,7 +23,8 @@ public partial class MainWindow : Window
         }
 
         Loaded += MainWindow_Loaded;
-        Closing += (_, _) => _engine.CancelFaceIdAttempt();
+        Closing += MainWindow_Closing;
+        Deactivated += MainWindow_Deactivated;
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -97,6 +101,12 @@ public partial class MainWindow : Window
                 BtnTryAgain.Visibility = Visibility.Visible;
                 break;
 
+            case ShellState.INPUT_GUARD_FAILED:
+                StatusTitle.Text = "Input Guard Failed";
+                StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71));
+                StatusDetail.Text = $"Shell Gate remains locked because keyboard lockdown failed. {message} Use Recovery.";
+                break;
+
             case ShellState.STARTING_DESKTOP:
                 StatusTitle.Text = "Starting Windows Desktop...";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
@@ -126,7 +136,10 @@ public partial class MainWindow : Window
                 await Task.Delay(1500);
                 Dispatcher.Invoke(() =>
                 {
-                    Application.Current.Shutdown(0);
+                    if (_engine.ExplorerStarted && _engine.CurrentState == ShellState.STARTING_DESKTOP)
+                    {
+                        Application.Current.Shutdown(0);
+                    }
                 });
             });
         }
@@ -141,7 +154,7 @@ public partial class MainWindow : Window
     private void BtnRetryDesktop_Click(object sender, RoutedEventArgs e)
     {
         BtnRetryDesktop.Visibility = Visibility.Collapsed;
-        _engine.LaunchExplorerSafe();
+        _engine.RetryExplorerSafe();
     }
 
     private void BtnRecovery_Click(object sender, RoutedEventArgs e)
@@ -158,5 +171,49 @@ public partial class MainWindow : Window
     private void BtnExitTest_Click(object sender, RoutedEventArgs e)
     {
         Application.Current.Shutdown(0);
+    }
+
+    private void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (!_engine.CanClose)
+        {
+            e.Cancel = true;
+            _engine.Log("Window close request rejected while Shell Gate is locked.");
+            ReassertLockedWindow();
+            return;
+        }
+
+        _engine.Shutdown();
+    }
+
+    private void MainWindow_Deactivated(object? sender, EventArgs e)
+    {
+        if (!_engine.IsGateLocked || _focusReclaimPending)
+        {
+            return;
+        }
+
+        _focusReclaimPending = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+        {
+            _focusReclaimPending = false;
+            if (_engine.IsGateLocked && IsVisible && !IsActive)
+            {
+                ReassertLockedWindow();
+            }
+        });
+    }
+
+    private void ReassertLockedWindow()
+    {
+        if (!_engine.IsGateLocked)
+        {
+            return;
+        }
+
+        WindowState = WindowState.Maximized;
+        Topmost = true;
+        Activate();
+        Focus();
     }
 }

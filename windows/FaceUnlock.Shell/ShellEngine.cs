@@ -29,6 +29,7 @@ public enum ShellState
     RECOVERY,
     STARTING_DESKTOP,
     DESKTOP_FAILED,
+    INPUT_GUARD_FAILED,
     TEST_PASS
 }
 
@@ -69,6 +70,7 @@ public sealed class ShellEngine
     private readonly string _pipeName;
     private readonly IExplorerLauncher _launcher;
     private readonly string _logFile;
+    private readonly IShellInputGuard _inputGuard;
     private readonly object _stateLock = new();
 
     private ShellState _currentState = ShellState.INITIALIZING;
@@ -76,6 +78,9 @@ public sealed class ShellEngine
     private string? _currentRequestId;
     private bool _isAttemptInProgress = false;
     private bool _explorerStarted = false;
+    private bool _desktopReleaseAuthorized = false;
+    private bool _inputGuardAttempted = false;
+    private bool _inputGuardFailed = false;
     private CancellationTokenSource? _attemptCts;
 
     public event Action<ShellState, string>? StateChanged;
@@ -84,13 +89,17 @@ public sealed class ShellEngine
     public string StatusMessage => _statusMessage;
     public ShellMode Mode => _mode;
     public bool ExplorerStarted => _explorerStarted;
+    public bool InputGuardActive => _inputGuard.IsActive;
+    public bool IsGateLocked => _mode == ShellMode.Shell && !_desktopReleaseAuthorized && !_explorerStarted;
+    public bool CanClose => _mode == ShellMode.Test || _desktopReleaseAuthorized || _explorerStarted;
     public string? CurrentRequestId => _currentRequestId;
 
-    public ShellEngine(ShellMode mode, string pipeName = "FaceUnlock.Auth.v1", IExplorerLauncher? launcher = null, string? customLogFile = null)
+    public ShellEngine(ShellMode mode, string pipeName = "FaceUnlock.Auth.v1", IExplorerLauncher? launcher = null, string? customLogFile = null, IShellInputGuard? inputGuard = null)
     {
         _mode = mode;
         _pipeName = pipeName;
         _launcher = launcher ?? new DefaultExplorerLauncher();
+        _inputGuard = inputGuard ?? new ShellInputGuard();
 
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "logs");
         _logFile = customLogFile ?? Path.Combine(logDir, "shell.log");
@@ -138,6 +147,11 @@ public sealed class ShellEngine
 
         SetState(ShellState.INITIALIZING, "Connecting to FaceUnlock Service...");
 
+        if (!EnsureInputGuard())
+        {
+            return;
+        }
+
         // 1. Health check service with retries (up to ~10-15s)
         bool serviceOk = false;
         try
@@ -174,6 +188,11 @@ public sealed class ShellEngine
 
     public async Task<bool> TryStartFaceIdAttemptAsync(CancellationToken ct = default)
     {
+        if (!EnsureInputGuard())
+        {
+            return false;
+        }
+
         lock (_stateLock)
         {
             if (_isAttemptInProgress)
@@ -381,10 +400,50 @@ public sealed class ShellEngine
             return true;
         }
 
+        return CompleteApprovedGrantAndLaunchExplorer();
+    }
+
+    internal bool CompleteApprovedGrantAndLaunchExplorer()
+    {
+        lock (_stateLock)
+        {
+            if (_inputGuardFailed)
+            {
+                Log("Desktop release rejected because the input guard is in a failed state.");
+                return false;
+            }
+            _desktopReleaseAuthorized = true;
+        }
+
+        if (!_inputGuard.TryUninstall(out var guardError))
+        {
+            lock (_stateLock)
+            {
+                _desktopReleaseAuthorized = false;
+                _inputGuardFailed = true;
+            }
+            SetState(ShellState.INPUT_GUARD_FAILED, $"Could not release keyboard input safely: {guardError}");
+            return false;
+        }
+
+        Log("Input guard removed after approved grant consumption.");
         return LaunchExplorerSafe();
     }
 
-    public bool LaunchExplorerSafe()
+    public bool RetryExplorerSafe()
+    {
+        lock (_stateLock)
+        {
+            if (!_desktopReleaseAuthorized || _inputGuardFailed)
+            {
+                Log("Desktop retry rejected because no approved desktop release is active.");
+                return false;
+            }
+        }
+        return LaunchExplorerSafe();
+    }
+
+    private bool LaunchExplorerSafe()
     {
         lock (_stateLock)
         {
@@ -424,6 +483,50 @@ public sealed class ShellEngine
             SetState(ShellState.DESKTOP_FAILED, $"Desktop failed to start: {err}");
             return false;
         }
+    }
+
+    private bool EnsureInputGuard()
+    {
+        if (_mode == ShellMode.Test)
+        {
+            return true;
+        }
+
+        lock (_stateLock)
+        {
+            if (_inputGuardFailed)
+            {
+                return false;
+            }
+            if (_inputGuardAttempted)
+            {
+                return _inputGuard.IsActive;
+            }
+            _inputGuardAttempted = true;
+        }
+
+        if (_inputGuard.TryInstall(out var error))
+        {
+            Log("Shell input guard installed.");
+            return true;
+        }
+
+        lock (_stateLock)
+        {
+            _inputGuardFailed = true;
+        }
+        SetState(ShellState.INPUT_GUARD_FAILED, $"Keyboard lockdown could not be installed: {error}");
+        return false;
+    }
+
+    public void Shutdown()
+    {
+        CancelFaceIdAttempt();
+        if (!_inputGuard.TryUninstall(out var error))
+        {
+            Log($"WARNING: input guard uninstall during shutdown failed: {error}");
+        }
+        _inputGuard.Dispose();
     }
 
     private async Task<LocalAuthResponse?> SendIpcAsync(LocalAuthRequest req, int timeoutMs = 3000)

@@ -11,4 +11,8 @@
   <ItemGroup>
     <ProjectReference Include="..\FaceUnlock.Core\FaceUnlock.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FaceUnlock.ShellTests" />
+  </ItemGroup>
 </Project>

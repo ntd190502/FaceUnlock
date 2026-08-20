@@ -13,6 +13,17 @@
 11. **Targeted BLE discovery.** Windows reads the Device ID GATT characteristic and fails closed if the expected device identity is missing, unreadable, or different.
 12. **Bounded BLE framing.** Multi-packet BLE messages use framing with a 16 KiB cap and 15-second incomplete-assembly timeout. Transport framing does not replace cryptographic verification.
 13. **Recovery remains Windows-owned.** Built-in Windows PIN/password providers remain available.
+14. **Shell input guard is scoped and user-mode.** In Phase F Shell Mode, a low-level keyboard hook blocks common user-mode escape shortcuts only while the gate is locked. It is removed after an approved grant is consumed and during shutdown. Hook installation/removal failures do not release Explorer.
+
+## Phase F Shell Gate boundary
+
+FaceUnlock Phase F is a post-logon Shell Gate, not an LSA/Winlogon security
+boundary. Ctrl+Alt+Del is the Windows Secure Attention Sequence and cannot be
+blocked by a user-mode application. Returning from the Secure Attention screen
+leaves the running gate in its locked state, but an administrator can use Task
+Manager to launch `explorer.exe`; this recovery bypass is intentional and by
+design. FaceUnlock does not patch Winlogon/LSA, disable LSA protection or Windows
+security UI, or set a global policy that disables Windows recovery.
 
 ## Important trust boundary during initial pairing
 

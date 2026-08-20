@@ -109,6 +109,7 @@ windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj
 windows/FaceUnlock.Shell/MainWindow.xaml
 windows/FaceUnlock.Shell/MainWindow.xaml.cs
 windows/FaceUnlock.Shell/ShellEngine.cs
+windows/FaceUnlock.Shell/ShellInputGuard.cs
 windows/FaceUnlock.ShellTests/FaceUnlock.ShellTests.csproj
 windows/FaceUnlock.ShellTests/Program.cs
 windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj

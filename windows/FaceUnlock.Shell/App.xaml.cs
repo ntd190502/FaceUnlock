@@ -7,6 +7,7 @@ namespace FaceUnlock.Shell;
 public partial class App : Application
 {
     private static Mutex? _instanceMutex;
+    private ShellEngine? _engine;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -47,8 +48,9 @@ public partial class App : Application
             return;
         }
 
-        var engine = new ShellEngine(mode);
-        var window = new MainWindow(engine);
+        _engine = new ShellEngine(mode);
+        Exit += (_, _) => _engine?.Shutdown();
+        var window = new MainWindow(_engine);
         window.Show();
     }
 

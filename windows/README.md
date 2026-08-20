@@ -7,3 +7,16 @@
 - `CompanionCDF`: restricted Microsoft API reference.
 
 Start with the Agent. Do not install the Credential Provider until online/BLE approval tests pass.
+
+## Shell Gate security boundary
+
+FaceUnlock Phase F is a post-logon Shell Gate. While approval is pending, a scoped
+low-level keyboard guard blocks common user-mode escape shortcuts and the window
+rejects close requests. The guard is removed after an approved grant is consumed,
+before Explorer starts, and during application shutdown.
+
+Ctrl+Alt+Del is the Windows Secure Attention Sequence and cannot be blocked by a
+user-mode application. Administrative/Secure Attention recovery (including Task
+Manager launching `explorer.exe`) can bypass the Shell Gate by design. FaceUnlock
+does not patch Winlogon/LSA, disable Windows security UI, or install persistent
+keyboard mappings or recovery policies.

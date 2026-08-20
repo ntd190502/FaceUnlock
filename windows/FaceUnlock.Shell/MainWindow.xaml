@@ -5,6 +5,8 @@
         WindowStyle="None"
         WindowState="Maximized"
         Topmost="True"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
         Background="#0F172A"
         Foreground="#F8FAFC"
         FontFamily="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
@@ -47,7 +49,7 @@
             <Border Background="#1E293B" Width="440" Padding="28" CornerRadius="16" HorizontalAlignment="Center" VerticalAlignment="Center" BorderBrush="#475569" BorderThickness="1">
                 <StackPanel>
                     <TextBlock Text="FaceUnlock Recovery" FontSize="20" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,0,0,12"/>
-                    <TextBlock Text="If Face ID or Bluetooth is unavailable, use standard Windows administrative recovery procedures:" FontSize="13" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock Text="SECURITY BOUNDARY: FaceUnlock Phase F is a post-logon Shell Gate. Administrative/Secure Attention recovery can bypass it by design." FontSize="13" Foreground="#FBBF24" TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBlock Text="1. Press Ctrl+Alt+Del -> Task Manager -> Run new task: explorer.exe&#x0a;2. Or boot into Safe Mode and run Disable-ShellGate.ps1&#x0a;3. Recovery script path: %ProgramFiles%\FaceUnlock\FaceUnlock-Shell-Recovery.ps1" FontSize="12" Foreground="#CBD5E1" TextWrapping="Wrap" Margin="0,0,0,20"/>
                     <Button Content="Dismiss" Click="BtnDismissRecovery_Click" Width="100" Height="36" Background="#3B82F6" Foreground="#FFFFFF" FontWeight="SemiBold" HorizontalAlignment="Right" BorderThickness="0" Cursor="Hand"/>
                 </StackPanel>
