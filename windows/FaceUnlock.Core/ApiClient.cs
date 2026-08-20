@@ -34,6 +34,10 @@ public sealed class ApiClient {
         r.Content=JsonContent.Create(new {});
         using var resp=await _http.SendAsync(r,ct); return await Read<RevokeDeviceResponse>(resp,ct);
     }
+    public async Task<DeviceListResponse> GetDevicesAsync(CancellationToken ct=default) {
+        using var r=Req(HttpMethod.Get,"/v1/devices",auth:true);
+        using var resp=await _http.SendAsync(r,ct); return await Read<DeviceListResponse>(resp,ct);
+    }
     public async Task<UnlockStatusResponse> GetUnlockStatusAsync(string id,CancellationToken ct=default) {
         using var r=Req(HttpMethod.Get,$"/v1/unlock/status/{Uri.EscapeDataString(id)}",auth:true);
         using var resp=await _http.SendAsync(r,ct); return await Read<UnlockStatusResponse>(resp,ct);

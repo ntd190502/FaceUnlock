@@ -114,7 +114,9 @@ final class UnlockCoordinator: ObservableObject {
             cfg.pcName = response.pc_name
             cfg.pcPublicKeyPEM = response.pc_public_key_pem
             cfg.deviceID = response.device_id
-            cfg.deviceAPIToken = response.device_api_token
+            if let token = response.device_api_token { cfg.deviceAPIToken = token }
+            cfg.pairedPCs.removeAll { $0.id == response.pc_id }
+            cfg.pairedPCs.append(PairedPC(id: response.pc_id, name: response.pc_name, status: "ACTIVE", last_used_at: nil))
             AppConfig.current = cfg
 
             BLEPeripheralManager.shared.startAdvertising()

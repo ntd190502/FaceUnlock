@@ -47,7 +47,7 @@ public partial class MainWindow : Window
     void Write(string s){Log.AppendText($"[{DateTime.Now:HH:mm:ss}] {s}\n");Log.ScrollToEnd();}
     void ShowQr(string text){using var gen=new QRCodeGenerator();using var data=gen.CreateQrCode(text,QRCodeGenerator.ECCLevel.Q);var png=new PngByteQRCode(data).GetGraphic(8);var img=new BitmapImage();using var ms=new MemoryStream(png);img.BeginInit();img.CacheOption=BitmapCacheOption.OnLoad;img.StreamSource=ms;img.EndInit();QrImage.Source=img;}
 
-    async void Pair_Click(object sender,RoutedEventArgs e){try{var pub=keys.EnsurePublicKeyPem();var r=await api.StartPairAsync(pub);cfg.PcToken=r.pc_token;cfg.PairId=r.pair_id;store.Save(cfg);api=new ApiClient(cfg);var payload=new{type="faceunlock-pair-v1",server=cfg.ServerUrl,pair_id=r.pair_id,pair_code=r.pair_code,pc_id=cfg.PcId,pc_name=cfg.PcName,pc_public_key_pem=pub};ShowQr(JsonSerializer.Serialize(payload));Write("Pair QR shown. Scan it in the iPhone app.");for(int i=0;i<60;i++){await Task.Delay(2000);var s=await api.PairStatusAsync(r.pair_id);if(s.paired&&s.device is not null){cfg.DeviceId=s.device.id;cfg.DevicePublicKeyPem=s.device.public_key_pem;store.Save(cfg);RefreshSetupStatus();Write("Pairing complete. Enable FaceUnlock is now available.");break;}}}catch(Exception ex){Write(ex.ToString());}}
+    async void Pair_Click(object sender,RoutedEventArgs e){try{var pub=keys.EnsurePublicKeyPem();var r=await api.StartPairAsync(pub);cfg.PcToken=r.pc_token;cfg.PairId=r.pair_id;store.Save(cfg);api=new ApiClient(cfg);var payload=new{type="faceunlock-pair-v1",server=cfg.ServerUrl,pair_id=r.pair_id,pair_code=r.pair_code,pc_id=cfg.PcId,pc_name=cfg.PcName,pc_public_key_pem=pub};ShowQr(JsonSerializer.Serialize(payload));Write("Pair QR shown. Scan it in the iPhone app.");for(int i=0;i<60;i++){await Task.Delay(2000);var s=await api.PairStatusAsync(r.pair_id);if(s.paired&&s.device is not null){cfg.DeviceId=s.device.id;cfg.DevicePublicKeyPem=s.device.public_key_pem;cfg.Devices.RemoveAll(d=>d.id==s.device.id);cfg.Devices.Add(s.device);store.Save(cfg);RefreshSetupStatus();Write("Pairing complete. Enable FaceUnlock is now available.");break;}}}catch(Exception ex){Write(ex.ToString());}}
 
     async void Enable_Click(object sender,RoutedEventArgs e){try{if(!Paired())throw new InvalidOperationException("Pair your iPhone first.");EnableButton.IsEnabled=false;var script=Path.Combine(InstallDir,"Enable-ShellGate.ps1");if(!File.Exists(script))throw new FileNotFoundException("Enable-ShellGate.ps1 is missing",script);using var p=Process.Start(new ProcessStartInfo("powershell.exe",$"-ExecutionPolicy Bypass -File \"{script}\" -Force -CustomShellPath \"{Path.Combine(InstallDir,"FaceUnlockShell.exe")}\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true});await p!.WaitForExitAsync();if(p.ExitCode!=0)throw new InvalidOperationException(await p.StandardError.ReadToEndAsync());RefreshSetupStatus();Write("FaceUnlock is ready and will be active on next sign-in/restart.");}catch(Exception ex){Write(ex.Message);RefreshSetupStatus();}finally{EnableButton.IsEnabled=true;}}
 
@@ -60,7 +60,8 @@ public partial class MainWindow : Window
 
             var selectedDeviceId = cfg.DeviceId;
             var selectedDevicePublicKeyPem = cfg.DevicePublicKeyPem;
-            var r = await api.RequestUnlockAsync(selectedDeviceId);
+            // V2 creates one logical request and notifies all active pairings.
+            var r = await api.RequestUnlockAsync();
             Write($"Session {r.session_id}; push={r.push_sent}; {r.push_error}");
 
             while (DateTimeOffset.UtcNow.ToUnixTimeSeconds() < r.expires_at)
@@ -74,7 +75,11 @@ public partial class MainWindow : Window
                     var canonical = Protocol.Canonical(s.session_id, s.challenge, cfg.PcId, s.expires_at);
                     var canonicalBytes = System.Text.Encoding.UTF8.GetBytes(canonical);
                     var canonicalHex = Convert.ToHexString(canonicalBytes).ToLowerInvariant();
-                    var pubFp = KeyStore.ComputeFingerprint(selectedDevicePublicKeyPem);
+                    var winnerId = s.winning_device_id ?? s.device_id ?? selectedDeviceId;
+                    var winnerPem = winnerId == selectedDeviceId ? selectedDevicePublicKeyPem : cfg.Devices.FirstOrDefault(d => d.id == winnerId)?.public_key_pem;
+                    if (string.IsNullOrWhiteSpace(winnerPem))
+                        throw new CryptographicException($"Approved winner {winnerId} is not a locally known paired device");
+                    var pubFp = KeyStore.ComputeFingerprint(winnerPem);
 
                     Write($"""
                     WINDOWS VERIFY:
@@ -87,7 +92,7 @@ public partial class MainWindow : Window
                     signature base64={s.signature}
                     public key fingerprint={pubFp}
                     selected device_id={selectedDeviceId}
-                    response device_id={s.device_id ?? r.device_id}
+                    winning device_id={winnerId}
                     """);
 
                     if (!string.IsNullOrWhiteSpace(s.device_public_key_pem))
@@ -97,7 +102,7 @@ public partial class MainWindow : Window
                             throw new CryptographicException($"Device public key mismatch: server returned key fingerprint {respFp}, expected {pubFp}");
                     }
 
-                    if (s.signature is null || !KeyStore.VerifyPem(selectedDevicePublicKeyPem, canonical, s.signature))
+                    if (s.signature is null || !KeyStore.VerifyPem(winnerPem, canonical, s.signature))
                         throw new CryptographicException("Server says APPROVED but iPhone signature is invalid");
 
                     Write("Face ID approval verified locally. Integration layer may proceed.");

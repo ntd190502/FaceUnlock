@@ -16,3 +16,15 @@ php -S 127.0.0.1:8080 hosting/public/router.php
 ```
 
 Never commit `config.php` or the Telegram bot token.
+
+## V2 database upgrade
+
+Back up the production database, deploy the application, then run
+`php hosting/scripts/migrate.php` once from the hosting CLI. The migration tracks
+versions in `schema_migrations`; it preserves existing device IDs and validates the
+number of migrated legacy pairings before dropping `devices.pc_id`. Do not manually
+import `schema.sql` over an existing installation.
+
+Configure an HTTPS `base_url`, rate-limit values, retention values, and an optional
+SHA-256 admin bearer token in `config.php`. Schedule the documented cleanup command
+if cron is available; request expiration remains safe without cron.

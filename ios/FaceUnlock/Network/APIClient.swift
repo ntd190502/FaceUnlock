@@ -57,6 +57,10 @@ final class APIClient {
         }
         return try await request("/v1/unlock/pending", token: token)
     }
+    func pairedPCs() async throws -> PairedPCResponse {
+        guard let token = AppConfig.current.deviceAPIToken else { throw URLError(.userAuthenticationRequired) }
+        return try await request("/v1/device/pcs", token: token)
+    }
 
 }
 

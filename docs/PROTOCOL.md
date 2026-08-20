@@ -2,6 +2,19 @@
 
 All timestamps are Unix seconds UTC. All random identifiers use at least 128 bits of randomness unless a transport-only identifier is explicitly described otherwise.
 
+## Hosting V2 multi-device semantics
+
+`POST /v1/unlock/request` now creates one logical request and candidates for every
+active `PC ↔ iPhone` relation. Existing `session_id` fields remain aliases for the
+logical request ID. `GET /v1/unlock/pending` returns the same pending request to each
+candidate. A candidate approval is accepted only while its active relation exists;
+the server atomically changes `PENDING` to `APPROVED` and records `winning_device_id`.
+All later approvals return `ALREADY_COMPLETED` and cannot overwrite the signature.
+
+`GET /v1/devices` is PC-authenticated device management. `GET /v1/device/pcs` is
+device-authenticated PC management. `POST /v1/devices/{device_id}/revoke` revokes
+only that relation; it never globally revokes the iPhone or its relations with other PCs.
+
 ## Canonical signed online approval
 
 UTF-8 bytes of:

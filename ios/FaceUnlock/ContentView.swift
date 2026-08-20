@@ -22,6 +22,12 @@ struct ContentView: View {
                             .foregroundColor(.secondary)
                     }
                 }
+                Section(header: Text("Paired PCs")) {
+                    if AppConfig.current.pairedPCs.isEmpty { Text("No paired PCs yet").foregroundColor(.secondary) }
+                    ForEach(AppConfig.current.pairedPCs) { pc in
+                        HStack { Text(pc.name); Spacer(); Text(pc.status).foregroundColor(.secondary) }
+                    }
+                }
                 if let session = coordinator.pendingOnlineSessionID {
                     Section(header: Text("Unlock request")) {
                         Text("A paired computer is requesting approval.")

@@ -46,7 +46,7 @@ struct PairCompleteRequest: Codable {
 struct PairCompleteResponse: Codable {
     let ok: Bool
     let device_id: String
-    let device_api_token: String
+    let device_api_token: String?
     let pc_id: String
     let pc_name: String
     let pc_public_key_pem: String
@@ -57,3 +57,11 @@ struct PendingUnlockResponse: Codable {
     let pending: Bool
     let session_id: String?
 }
+
+struct PairedPC: Codable, Identifiable {
+    let id: String
+    let name: String
+    let status: String
+    let last_used_at: String?
+}
+struct PairedPCResponse: Codable { let ok: Bool; let pcs: [PairedPC] }

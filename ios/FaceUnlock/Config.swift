@@ -6,6 +6,7 @@ struct AppConfig: Codable {
     var pcName: String?
     var pcPublicKeyPEM: String?
     var deviceID: String?
+    var pairedPCs: [PairedPC] = []
 
     /// Stored only in the iOS Keychain. It is intentionally excluded from the
     /// UserDefaults JSON representation.
@@ -26,7 +27,7 @@ struct AppConfig: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case serverURL, pcID, pcName, pcPublicKeyPEM, deviceID, deviceAPIToken
+        case serverURL, pcID, pcName, pcPublicKeyPEM, deviceID, deviceAPIToken, pairedPCs
     }
 
     init(
@@ -58,6 +59,7 @@ struct AppConfig: Codable {
             try container.decodeIfPresent(String.self, forKey: .pcPublicKeyPEM)
         self.deviceID =
             try container.decodeIfPresent(String.self, forKey: .deviceID)
+        self.pairedPCs = try container.decodeIfPresent([PairedPC].self, forKey: .pairedPCs) ?? []
 
         // Migration from older releases that persisted the bearer token inside
         // the UserDefaults JSON blob.
@@ -78,6 +80,7 @@ struct AppConfig: Codable {
         try container.encodeIfPresent(pcName, forKey: .pcName)
         try container.encodeIfPresent(pcPublicKeyPEM, forKey: .pcPublicKeyPEM)
         try container.encodeIfPresent(deviceID, forKey: .deviceID)
+        try container.encode(pairedPCs, forKey: .pairedPCs)
         // deviceAPIToken must never be encoded here.
     }
 
