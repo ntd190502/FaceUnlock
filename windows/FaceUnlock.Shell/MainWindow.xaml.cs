@@ -30,7 +30,8 @@ public partial class MainWindow : Window
     {
         if (_engine.Mode == ShellMode.Test && !string.IsNullOrWhiteSpace(_previewState))
         {
-            _engine.Log($"Shell visual preview render tier: {RenderCapability.Tier >> 16}; continuous storyboard groups: 4.");
+            var dpi = VisualTreeHelper.GetDpi(this);
+            _engine.Log($"Shell visual preview render tier: {RenderCapability.Tier >> 16}; DPI: {dpi.DpiScaleX:0.##}x{dpi.DpiScaleY:0.##}; continuous storyboard groups: 4.");
             ApplyPreviewState(_previewState);
             return;
         }
