@@ -93,9 +93,9 @@ function EnsureService {
     }
     if ($svc.Status -eq 'Running') { Stop-Service -Name $serviceName -Force -ErrorAction Stop; Log '[SERVICE] stop PASS' }
     Log '[SERVICE] repair path/start mode requested'
-    & "$env:SystemRoot\System32\sc.exe" config $serviceName "binPath= $expectedPath" 'start= auto' | Out-Null
+    & "$env:SystemRoot\System32\sc.exe" config $serviceName 'binPath=' $expectedPath 'start=' 'auto' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Service config repair failed (exit=$LASTEXITCODE)" }
-    & "$env:SystemRoot\System32\sc.exe" failure $serviceName 'reset= 86400' 'actions= restart/2000/restart/5000/restart/10000' | Out-Null
+    & "$env:SystemRoot\System32\sc.exe" failure $serviceName 'reset=' '86400' 'actions=' 'restart/2000/restart/5000/restart/10000' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Service recovery policy failed (exit=$LASTEXITCODE)" }
     Log '[SERVICE] crash recovery restart policy PASS'
     $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop

@@ -81,7 +81,7 @@ try {
     Assert-ServiceHealthy
 
     Stop-Service -Name $serviceName -Force
-    & "$env:SystemRoot\System32\sc.exe" config $serviceName 'binPath= "C:\FaceUnlock-Wrong-Path.exe"' 'start= demand' | Out-Null
+    & "$env:SystemRoot\System32\sc.exe" config $serviceName 'binPath=' '"C:\FaceUnlock-Wrong-Path.exe"' 'start=' 'demand' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not create wrong-path regression state.' }
     & $setup -Mode install -InstallDir $InstallDir
     if ($LASTEXITCODE -ne 0) {

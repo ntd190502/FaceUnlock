@@ -32,7 +32,8 @@ function Write-MigrationLog([string]$Message) {
 
 function Test-IsLegacyPackage([object]$Value) {
     if ($null -eq $Value) { return $false }
-    $name = [IO.Path]::GetFileNameWithoutExtension(([string]$Value).Trim())
+    $name = ([string]$Value).Trim().Trim([char]0)
+    if ($name.EndsWith('.dll', [StringComparison]::OrdinalIgnoreCase)) { $name = $name.Substring(0, $name.Length - 4) }
     return [string]::Equals($name, $legacyPackageName, [StringComparison]::OrdinalIgnoreCase)
 }
 
