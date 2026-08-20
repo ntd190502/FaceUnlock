@@ -7,10 +7,11 @@ Windows Agent
     -> HTTPS POST /v1/unlock/request (with selected device_id)
 Shared Hosting (PHP/MySQL)
     -> creates one-time challenge/session bound to that device
-    -> Telegram Bot API sendMessage (inline button with HTTPS landing URL)
+    -> creates a 256-bit random approval token and stores only its SHA-256 hash
+    -> Telegram Bot API sendMessage with a plain HTTPS URL in the text
 iPhone Telegram app
-    -> User taps "Mở FaceUnlock"
-    -> Opens https://domain/telegram/open/{session_id}
+    -> User taps https://domain/u/{opaque_token}
+    -> Hosting accepts only a PENDING, unexpired token-bound session
     -> Redirects to faceunlock://session?id={session_id}
 FaceUnlock iOS app
     -> Fetches device-bound session
@@ -26,7 +27,10 @@ Windows Agent
     -> FaceUnlock approval succeeds
 ```
 
-The hosting server never receives or stores the Windows PIN/password.
+The Telegram payload has no inline keyboard or callback data. The opaque URL token is
+bound to one device-bound session, expires with that session, and cannot approve a
+completed, rejected, expired, or cancelled request. The hosting server never receives
+or stores the Windows PIN/password.
 
 **Scope note:** the flow above completes FaceUnlock biometric approval. The current `CredentialProvider` remains a scaffold; a successful phone approval does not by itself bypass Windows/LSA or automatically unlock the Windows logon session.
 
@@ -123,6 +127,6 @@ If automatic discovery fails, Windows displays a QR containing the same signed o
 - PC/device bearer tokens stored as SHA-256 hashes.
 - Pairing code expiry and explicit device association.
 - Device revocation.
-- One-time unlock challenges and status transitions (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`).
-- Telegram notification dispatch and HTTPS landing-page deep link.
+- One-time unlock challenges and status transitions (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED`).
+- Plain Telegram HTTPS-link dispatch with hashed, opaque approval tokens; no Telegram callback is required.
 - Server-side ECDSA verification before a session becomes `APPROVED`.

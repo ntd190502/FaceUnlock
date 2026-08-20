@@ -130,12 +130,15 @@ jobs:
         run: |
           test -f hosting/schema.sql
           test -f hosting/config.example.php
+          test -f hosting/migrations/20260820_plain_approval_url.sql
           test -f hosting/public/index.php
           test -f hosting/src/Auth.php
           test -f hosting/src/Crypto.php
           test -f hosting/src/Database.php
+          test -f hosting/src/ApprovalLink.php
           test -f hosting/src/TelegramClient.php
           test -f hosting/src/Util.php
+          test -f hosting/tests/telegram_plain_url_test.php
 
       - name: Lint PHP files
         run: |
@@ -144,6 +147,12 @@ jobs:
           for file in hosting/src/*.php; do
             php -l "$file"
           done
+          for file in hosting/tests/*.php; do
+            php -l "$file"
+          done
+
+      - name: Test Telegram plain approval URL
+        run: php hosting/tests/telegram_plain_url_test.php
 
       - name: Verify current notification architecture
         run: |
@@ -153,6 +162,11 @@ jobs:
           fi
           grep -R -n 'TelegramClient' hosting/public/index.php
           grep -R -n '/v1/unlock/pending' hosting/public/index.php ios/FaceUnlock/Network/APIClient.swift
+          if grep -R -n -E 'reply_markup|inline_keyboard|callback_data|callback_query|answerCallbackQuery' hosting/public hosting/src; then
+            echo "Error: Telegram callback/button runtime reference found"
+            exit 1
+          fi
+          grep -R -n 'approval_token_hash' hosting/public/index.php hosting/schema.sql
 
       - name: Verify BLE framing and secure token sources
         run: |

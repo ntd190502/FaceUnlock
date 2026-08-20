@@ -4,42 +4,37 @@ declare(strict_types=1);
 final class TelegramClient {
     private string $botToken;
     private string $chatId;
-    private string $baseUrl;
 
-    public function __construct(array $cfg, string $baseUrl) {
+    public function __construct(array $cfg) {
         $this->botToken = trim((string)($cfg['bot_token'] ?? ''));
         $this->chatId = trim((string)($cfg['chat_id'] ?? ''));
-        $this->baseUrl = rtrim(trim($baseUrl), '/');
     }
 
-    public function sendUnlock(string $sessionId, string $pcName, int $expiresAt): array {
-        if ($this->botToken === '' || $this->chatId === '') {
-            throw new RuntimeException('Telegram bot_token/chat_id is not configured');
-        }
-        if ($this->baseUrl === '') {
-            throw new RuntimeException('base_url is not configured');
+    public function buildUnlockNotification(string $pcName, string $approvalUrl, int $expiresAt): array {
+        if (filter_var($approvalUrl, FILTER_VALIDATE_URL) === false || strtolower((string)parse_url($approvalUrl, PHP_URL_SCHEME)) !== 'https') {
+            throw new InvalidArgumentException('Telegram approval URL must use HTTPS');
         }
 
-        $openUrl = $this->baseUrl . '/telegram/open/' . rawurlencode($sessionId);
         $remaining = max(0, $expiresAt - time());
-
         $text = "🔐 FaceUnlock\n\n"
-              . "Máy tính: " . $pcName . "\n"
-              . "đang yêu cầu xác thực Face ID.\n\n"
-              . "Yêu cầu hết hạn sau khoảng " . $remaining . " giây.";
+              . "Yêu cầu mở khóa:\n"
+              . "PC: " . $pcName . "\n\n"
+              . "Xác nhận:\n"
+              . $approvalUrl . "\n\n"
+              . "Hết hạn: " . $remaining . " giây";
 
-        $payload = [
+        return [
             'chat_id' => $this->chatId,
             'text' => $text,
             'disable_web_page_preview' => true,
-            'reply_markup' => [
-                'inline_keyboard' => [
-                    [
-                        ['text' => '🔓 Mở FaceUnlock', 'url' => $openUrl]
-                    ]
-                ]
-            ],
         ];
+    }
+
+    public function sendUnlockNotification(string $pcName, string $approvalUrl, int $expiresAt): array {
+        if ($this->botToken === '' || $this->chatId === '') {
+            throw new RuntimeException('Telegram bot_token/chat_id is not configured');
+        }
+        $payload = $this->buildUnlockNotification($pcName, $approvalUrl, $expiresAt);
 
         $url = 'https://api.telegram.org/bot' . $this->botToken . '/sendMessage';
         $ch = curl_init($url);
@@ -74,7 +69,6 @@ final class TelegramClient {
         return [
             'ok' => true,
             'message_id' => $decoded['result']['message_id'] ?? null,
-            'open_url' => $openUrl,
         ];
     }
 }

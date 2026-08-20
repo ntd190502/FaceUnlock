@@ -6,7 +6,7 @@ Biometric Face ID approval system for a Windows PC using an iPhone companion app
 
 - `ios/`: Swift/SwiftUI companion app with Face ID, Secure Enclave-backed ECDSA P-256 signing, Keychain token storage, foreground pending-session polling, MTU-safe BLE framing, and QR pairing/fallback.
 - `windows/`: .NET 8 Agent/Service with explicit device selection/revocation, DPAPI token protection, online protocol, targeted BLE discovery/framing, QR generation, and status/log UI.
-- `hosting/`: PHP 8 + MySQL backend with Telegram Bot notification dispatch, device-bound sessions, revocation, landing-page deep linking, and server-side signature verification.
+- `hosting/`: PHP 8 + MySQL backend with plain Telegram HTTPS-link notifications, hashed one-time approval tokens, device-bound sessions, revocation, and server-side signature verification.
 - `docs/`: architecture, protocol, security model, deployment/build instructions, limitations, and regression test plan.
 
 ## Core flows
@@ -17,9 +17,10 @@ Biometric Face ID approval system for a Windows PC using an iPhone companion app
 Windows Agent
     -> POST /v1/unlock/request { device_id }
 Hosting
-    -> Telegram Bot message
+    -> creates an opaque, short-lived approval URL
+    -> Telegram Bot message containing the plain URL (no button/callback)
 iPhone
-    -> Mở FaceUnlock
+    -> opens the HTTPS URL and hands off to FaceUnlock
     -> Face ID
     -> P-256 DER signature
     -> POST /v1/unlock/approve/{session}

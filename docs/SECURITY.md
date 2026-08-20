@@ -6,7 +6,7 @@
 4. **Face ID is explicit.** LocalAuthentication biometric verification runs before an online/offline approval signature is generated.
 5. **PC identity pinning on iPhone.** The pairing QR contains PC ID and PC public key. iOS rejects pair completion if the server returns a different PC ID or PC public key and stores the key from the scanned QR.
 6. **Protected bearer-token persistence.** Windows stores the PC bearer token through DPAPI; iOS stores the device bearer token in Keychain. Legacy plaintext token migration removes the old iOS UserDefaults field after it is copied into Keychain.
-7. **Hosting token storage.** Server-side bearer tokens are random and only SHA-256 token hashes are persisted in MySQL.
+7. **Hosting token storage.** Server-side bearer and short-lived approval tokens are random; only their SHA-256 hashes are persisted in MySQL. Approval URLs carry no PC/device bearer token and require HTTPS.
 8. **Explicit device targeting and revocation.** Online sessions are bound to a selected device ID. Device-authenticated routes reject revoked device tokens.
 9. **Server + Windows signature verification.** Hosting verifies the iPhone approval before setting `APPROVED`; Windows verifies the returned signature again using the public key associated with that target device.
 10. **Signed offline requests.** PC -> iPhone BLE/QR requests carry a PC P-256 signature; iOS verifies the pinned PC public key before Face ID.

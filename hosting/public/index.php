@@ -8,24 +8,24 @@ if (!is_file($configPath)) {
 }
 $config = require $configPath;
 
-foreach (['Util','Database','Auth','Crypto','TelegramClient'] as $f) {
+foreach (['Util','Database','Auth','Crypto','ApprovalLink','TelegramClient'] as $f) {
     require dirname(__DIR__).'/src/'.$f.'.php';
 }
 
 $db = new Database($config['db']);
 $auth = new Auth($db);
-$telegram = new TelegramClient($config['telegram'] ?? [], (string)($config['base_url'] ?? ''));
+$telegram = new TelegramClient($config['telegram'] ?? []);
 
 $method = $_SERVER['REQUEST_METHOD'];
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/';
 
 // Support installation in a subdirectory by stripping everything before
-// /v1, /health or /telegram/open.
+// /v1, /health or the opaque approval-link route.
 if (($p = strpos($path, '/v1/')) !== false) {
     $path = substr($path, $p);
 } elseif (($p = strpos($path, '/health')) !== false) {
     $path = '/health';
-} elseif (($p = strpos($path, '/telegram/open/')) !== false) {
+} elseif (($p = strpos($path, '/u/')) !== false) {
     $path = substr($path, $p);
 }
 
@@ -37,40 +37,53 @@ if ($method === 'GET' && $path === '/health') {
     ]);
 }
 
-// Telegram button -> HTTPS landing page -> FaceUnlock custom URL scheme.
-if ($method === 'GET' && preg_match('#^/telegram/open/([^/]+)$#', $path, $m)) {
-    $sessionId = rawurldecode($m[1]);
-    $s = $db->one(
-        'SELECT s.id,s.status,s.expires_at,p.name pc_name
+// Plain Telegram HTTPS link -> validated landing page -> FaceUnlock URL scheme.
+if ($method === 'GET' && preg_match('#^/u/([^/]+)$#', $path, $m)) {
+    $approvalToken = rawurldecode($m[1]);
+    $s = null;
+    if (ApprovalLink::isValidToken($approvalToken)) {
+        $s = $db->one(
+            'SELECT s.id,s.status,s.expires_at,p.name pc_name
          FROM unlock_sessions s
          JOIN pcs p ON p.id=s.pc_id
-         WHERE s.id=?',
-        [$sessionId]
-    );
+         WHERE s.approval_token_hash=?',
+            [ApprovalLink::hashToken($approvalToken)]
+        );
+    }
+    unset($approvalToken);
 
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Referrer-Policy: no-referrer');
+    header('X-Content-Type-Options: nosniff');
 
-    if (!$s) {
+    $linkState = ApprovalLink::state($s, time());
+    if ($linkState === 'INVALID') {
         http_response_code(404);
         echo '<!doctype html><meta charset="utf-8"><title>FaceUnlock</title>'
            . '<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#0f172a;color:#fff;padding:32px">'
-           . '<h2>FaceUnlock</h2><p>Không tìm thấy yêu cầu mở khóa.</p></body>';
+           . '<h2>FaceUnlock</h2><p>Invalid or expired FaceUnlock request.</p></body>';
         exit;
     }
 
-    if ((int)$s['expires_at'] < time() || $s['status'] !== 'PENDING') {
-        if ($s['status'] === 'PENDING' && (int)$s['expires_at'] < time()) {
-            $db->exec("UPDATE unlock_sessions SET status='EXPIRED' WHERE id=? AND status='PENDING'", [$sessionId]);
-        }
-        $status = htmlspecialchars((string)$s['status'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    if ($linkState === 'EXPIRED') {
+        $db->exec("UPDATE unlock_sessions SET status='EXPIRED' WHERE id=? AND status='PENDING'", [$s['id']]);
+        http_response_code(410);
         echo '<!doctype html><meta charset="utf-8"><title>FaceUnlock</title>'
            . '<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#0f172a;color:#fff;padding:32px">'
-           . '<h2>FaceUnlock</h2><p>Yêu cầu không còn khả dụng. Trạng thái: '.$status.'</p></body>';
+           . '<h2>FaceUnlock</h2><p>Invalid or expired FaceUnlock request.</p></body>';
         exit;
     }
 
-    $deepLink = 'faceunlock://session?id=' . rawurlencode($sessionId);
+    if ($linkState === 'COMPLETED') {
+        http_response_code(410);
+        echo '<!doctype html><meta charset="utf-8"><title>FaceUnlock</title>'
+           . '<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#0f172a;color:#fff;padding:32px">'
+           . '<h2>FaceUnlock</h2><p>Already approved / request completed.</p></body>';
+        exit;
+    }
+
+    $deepLink = 'faceunlock://session?id=' . rawurlencode((string)$s['id']);
 
     header('Content-Type: text/html; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -81,6 +94,11 @@ if ($method === 'GET' && preg_match('#^/telegram/open/([^/]+)$#', $path, $m)) {
     );
     $deepLinkHtml = htmlspecialchars(
         $deepLink,
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
+    );
+    $pcNameHtml = htmlspecialchars(
+        (string)$s['pc_name'],
         ENT_QUOTES | ENT_SUBSTITUTE,
         'UTF-8'
     );
@@ -101,6 +119,7 @@ p{color:#cbd5e1}
 <body>
 <div class="wrap">
 <h2>Đang mở FaceUnlock...</h2>
+<p>Yêu cầu mở khóa: <strong>' . $pcNameHtml . '</strong></p>
 <p>Nếu ứng dụng không tự mở, bấm nút bên dưới.</p>
 <a id="openApp" href="' . $deepLinkHtml . '">Mở FaceUnlock</a>
 </div>
@@ -263,22 +282,26 @@ if ($method === 'POST' && $path === '/v1/unlock/request') {
 
     $id = Util::id();
     $challenge = Util::token(32);
+    $approvalToken = ApprovalLink::createToken();
+    $approvalTokenHash = ApprovalLink::hashToken($approvalToken);
     $exp = time() + ($config['unlock_ttl'] ?? 90);
 
     $db->exec(
-        'INSERT INTO unlock_sessions(id,pc_id,device_id,challenge,expires_at)
-         VALUES(?,?,?,?,?)',
-        [$id,$pc['id'],$device['id'],$challenge,$exp]
+        'INSERT INTO unlock_sessions(id,pc_id,device_id,challenge,approval_token_hash,expires_at)
+         VALUES(?,?,?,?,?,?)',
+        [$id,$pc['id'],$device['id'],$challenge,$approvalTokenHash,$exp]
     );
 
     try {
-        $telegram->sendUnlock($id, $pc['name'], $exp);
+        $approvalUrl = ApprovalLink::buildUrl((string)($config['base_url'] ?? ''), $approvalToken);
+        $telegram->sendUnlockNotification($pc['name'], $approvalUrl, $exp);
         $sent = true;
         $notifyError = null;
     } catch (Throwable $e) {
         $sent = false;
         $notifyError = $e->getMessage();
     }
+    unset($approvalToken, $approvalTokenHash, $approvalUrl);
 
     // Keep old field names so the current Windows Agent remains compatible.
     Util::out([
@@ -359,12 +382,13 @@ if ($method === 'POST' && preg_match('#^/v1/unlock/approve/([^/]+)$#', $path, $m
         Util::error('bad_signature',403);
     }
 
-    $db->exec(
+    $updated = $db->exec(
         "UPDATE unlock_sessions
          SET status='APPROVED',signature_b64=?,biometric=?,approved_at=NOW()
-         WHERE id=? AND status='PENDING'",
-        [$b['signature'],$b['biometric']??'unknown',$s['id']]
+         WHERE id=? AND status='PENDING' AND expires_at>=?",
+        [$b['signature'],$b['biometric']??'unknown',$s['id'],time()]
     );
+    if ($updated !== 1) Util::error('session_not_pending',409);
 
     Util::out(['ok'=>true]);
 }

@@ -8,7 +8,9 @@ A normal Credential Provider must serialize credentials accepted by Windows auth
 
 ## Telegram & online delivery
 
-Online requests use the Telegram Bot API and an HTTPS landing page that attempts to open `faceunlock://session?id=...`.
+Online requests use the Telegram Bot API to send a plain, short-lived HTTPS approval
+URL. Telegram renders the URL as clickable text; no inline button or callback is used.
+The validated landing page attempts to open `faceunlock://session?id=...`.
 
 - Telegram delivery and the in-app browser are network/client dependent.
 - If FaceUnlock is already foregrounded, `/v1/unlock/pending` polling can discover the request without using the Telegram notification.
@@ -28,4 +30,7 @@ For a higher-assurance deployment, add an out-of-band/local verification of the 
 
 ## Telegram metadata
 
-Telegram receives the PC display name and an HTTPS URL containing a random, short-lived session identifier. It does not receive the Windows PIN/password or the signed private key material.
+Telegram receives the PC display name and an HTTPS URL containing an opaque, short-lived
+approval token. Only its SHA-256 hash is stored by hosting. Telegram does not receive a
+PC/device bearer token, Windows PIN/password, raw session ID in the notification URL,
+or private key material.

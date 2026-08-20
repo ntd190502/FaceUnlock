@@ -12,6 +12,17 @@ faceunlock-v1|<session_id>|<challenge_b64url>|<pc_id>|<expires_at>
 
 Signature algorithm: ECDSA P-256 + SHA-256. Signature wire format: ASN.1 DER encoded ECDSA signature, Base64 encoded.
 
+## Telegram approval URL
+
+Each online session receives an independent 256-bit random token. Telegram receives
+the plain HTTPS URL `base_url/u/<opaque_token>` in message text; it receives neither
+the PC bearer token nor a raw session identifier in that URL. MySQL stores only the
+SHA-256 hash of the token. The landing route resolves the hash only while the bound
+session is usable, then hands off to the existing `faceunlock://session?id=...` iOS
+flow. Approval still requires device authentication, Face ID, and the canonical P-256
+signature above. A terminal session cannot be revived or approved again through the
+link, and Telegram callbacks are not part of the protocol.
+
 ## Pairing QR
 
 JSON:

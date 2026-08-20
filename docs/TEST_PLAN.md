@@ -17,12 +17,16 @@
 
 ## C. Online Telegram Notification Unlock
 - Windows Agent requests unlock for selected device (`POST /v1/unlock/request` with `device_id`).
-- Telegram bot delivers notification message with inline "Mở FaceUnlock" button.
-- Tapping button navigates through landing page redirect to `faceunlock://session?id=...`.
+- Telegram bot delivers notification text containing `https://domain/u/<opaque-token>` and no reply markup.
+- The database stores only the token SHA-256 hash, bound to the device-specific unlock session.
+- Tapping the plain URL validates a pending, unexpired session and redirects to `faceunlock://session?id=...`.
 - Face ID prompt appears on iPhone.
 - On biometric success, iPhone signs canonical challenge with P-256 key and calls `POST /v1/unlock/approve/{id}`.
 - Hosting verifies signature and updates status to `APPROVED`.
 - Windows polls status, verifies iPhone signature locally, and succeeds.
+- Refreshing the URL after approval shows a completed request and cannot replay approval.
+- Invalid, expired, rejected, and cancelled session links cannot open the approval flow.
+- No Telegram webhook or `callback_query` is required for a successful unlock.
 
 ## D. Foreground App Polling
 - iPhone FaceUnlock app is open in foreground.

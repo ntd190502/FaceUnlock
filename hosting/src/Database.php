@@ -11,5 +11,5 @@ final class Database {
     public function one(string $sql, array $params=[]): ?array {
         $s=$this->pdo->prepare($sql); $s->execute($params); $r=$s->fetch(); return $r ?: null;
     }
-    public function exec(string $sql, array $params=[]): void { $s=$this->pdo->prepare($sql); $s->execute($params); }
+    public function exec(string $sql, array $params=[]): int { $s=$this->pdo->prepare($sql); $s->execute($params); return $s->rowCount(); }
 }
