@@ -12,4 +12,9 @@ final class Database {
         $s=$this->pdo->prepare($sql); $s->execute($params); $r=$s->fetch(); return $r ?: null;
     }
     public function exec(string $sql, array $params=[]): int { $s=$this->pdo->prepare($sql); $s->execute($params); return $s->rowCount(); }
+    public function transaction(callable $work): mixed {
+        $this->pdo->beginTransaction();
+        try { $result=$work(); $this->pdo->commit(); return $result; }
+        catch (Throwable $e) { if($this->pdo->inTransaction()) $this->pdo->rollBack(); throw $e; }
+    }
 }
