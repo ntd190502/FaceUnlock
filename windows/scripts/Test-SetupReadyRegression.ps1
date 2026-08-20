@@ -35,7 +35,7 @@ function Test-PipePing {
         $reader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
         try {
             $id = [Guid]::NewGuid().ToString('N')
-            $writer.WriteLine((@{protocol_version=1;command='ping';request_id=$id;client_type='setup_regression'} | ConvertTo-Json -Compress))
+            $writer.WriteLine((@{version=1;command='ping';request_id=$id;client_type='setup_regression'} | ConvertTo-Json -Compress))
             $response = $reader.ReadLine() | ConvertFrom-Json
             return ($response.status -ieq 'ok' -and $response.request_id -eq $id)
         } finally { $writer.Dispose(); $reader.Dispose() }
@@ -69,6 +69,7 @@ try {
     & $setup -Mode install -InstallDir $InstallDir
     if ($LASTEXITCODE -ne 0) {
         Get-Content (Join-Path $dataDir 'logs\installer.log') -Tail 100 -ErrorAction SilentlyContinue
+        Get-Content (Join-Path $dataDir 'logs\service.log') -Tail 100 -ErrorAction SilentlyContinue
         throw "Setup missing-service repair failed (exit=$LASTEXITCODE)"
     }
     Assert-ServiceHealthy
@@ -86,6 +87,7 @@ try {
     & $setup -Mode install -InstallDir $InstallDir
     if ($LASTEXITCODE -ne 0) {
         Get-Content (Join-Path $dataDir 'logs\installer.log') -Tail 100 -ErrorAction SilentlyContinue
+        Get-Content (Join-Path $dataDir 'logs\service.log') -Tail 100 -ErrorAction SilentlyContinue
         throw "Setup existing-service repair failed (exit=$LASTEXITCODE)"
     }
     Assert-ServiceHealthy

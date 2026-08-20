@@ -61,15 +61,17 @@ function Test-ServicePipe {
         try {
             $writer.AutoFlush = $true
             $requestId = [Guid]::NewGuid().ToString('N')
-            $writer.WriteLine((@{ protocol_version=1; command='ping'; request_id=$requestId; client_type='setup_health' } | ConvertTo-Json -Compress))
+            $writer.WriteLine((@{ version=1; command='ping'; request_id=$requestId; client_type='setup_health' } | ConvertTo-Json -Compress))
             $response = $reader.ReadLine()
-            if (-not $response) { return $false }
+            if (-not $response) { Log '[SERVICE] IPC ping returned an empty response'; return $false }
             $parsed = $response | ConvertFrom-Json
-            return ($parsed.status -ieq 'ok' -and $parsed.request_id -eq $requestId)
+            $healthy = ($parsed.status -ieq 'ok' -and $parsed.request_id -eq $requestId)
+            if (-not $healthy) { Log "[SERVICE] IPC ping invalid response=$response" }
+            return $healthy
         }
         finally { $writer.Dispose(); $reader.Dispose() }
     }
-    catch { return $false }
+    catch { Log "[SERVICE] IPC ping error=$($_.Exception.GetType().Name) message=$($_.Exception.Message)"; return $false }
     finally { $client.Dispose() }
 }
 function Normalize-ServicePath([string]$PathName) {

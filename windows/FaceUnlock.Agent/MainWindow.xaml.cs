@@ -33,7 +33,7 @@ public partial class MainWindow : Window
             using var writer=new StreamWriter(pipe,new UTF8Encoding(false),1024,true){AutoFlush=true};
             using var reader=new StreamReader(pipe,new UTF8Encoding(false),false,1024,true);
             var requestId=Guid.NewGuid().ToString("N");
-            writer.WriteLine(JsonSerializer.Serialize(new{protocol_version=1,command="ping",request_id=requestId,client_type="agent_health"}));
+            writer.WriteLine(JsonSerializer.Serialize(new{version=1,command="ping",request_id=requestId,client_type="agent_health"}));
             var response=reader.ReadLine();
             if(string.IsNullOrWhiteSpace(response))return FaceUnlockServiceHealth.Unhealthy;
             using var json=JsonDocument.Parse(response);
