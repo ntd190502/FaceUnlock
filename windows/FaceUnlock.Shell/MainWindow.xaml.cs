@@ -8,19 +8,17 @@ namespace FaceUnlock.Shell;
 public partial class MainWindow : Window
 {
     private readonly ShellEngine _engine;
+    private readonly string? _previewState;
     private bool _focusReclaimPending;
 
-    public MainWindow(ShellEngine engine)
+    public MainWindow(ShellEngine engine, string? previewState = null)
     {
         InitializeComponent();
         _engine = engine;
+        _previewState = previewState;
         _engine.StateChanged += Engine_StateChanged;
 
-        ModeBadge.Text = _engine.Mode == ShellMode.Test ? "TEST MODE" : "SHELL GATE";
-        if (_engine.Mode == ShellMode.Test)
-        {
-            BtnExitTest.Visibility = Visibility.Visible;
-        }
+        PcName.Text = Environment.MachineName.ToUpperInvariant();
 
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
@@ -29,6 +27,12 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        if (_engine.Mode == ShellMode.Test && !string.IsNullOrWhiteSpace(_previewState))
+        {
+            var state = _previewState.ToLowerInvariant() switch { "bluetooth" => ShellState.WAITING_FACE_ID, "verifying" => ShellState.APPROVED, "approved" => ShellState.TEST_PASS, "error" => ShellState.ERROR, _ => ShellState.WAITING_FACE_ID };
+            UpdateUiForState(state, _previewState.Equals("bluetooth", StringComparison.OrdinalIgnoreCase) ? "Waiting for Bluetooth" : "Preview");
+            return;
+        }
         await _engine.InitializeAndAutoStartAsync();
     }
 
@@ -42,89 +46,83 @@ public partial class MainWindow : Window
 
     private void UpdateUiForState(ShellState state, string message)
     {
-        BtnTryAgain.Visibility = Visibility.Collapsed;
-        BtnRetryDesktop.Visibility = Visibility.Collapsed;
+        OnlineStatus.Text = "Online";
+        BluetoothStatus.Text = "Bluetooth Ready";
 
         switch (state)
         {
             case ShellState.INITIALIZING:
-                StatusTitle.Text = "Connecting to Service...";
+                StatusTitle.Text = "Waiting for iPhone";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)); // Sky
-                StatusDetail.Text = message;
+                StatusDetail.Text = "Connecting to your iPhone to unlock";
                 break;
 
             case ShellState.SERVICE_UNAVAILABLE:
-                StatusTitle.Text = "Service Unavailable";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
-                StatusDetail.Text = "FaceUnlock background service is not running. The desktop remains locked until the service is restored.";
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.NOT_PAIRED:
-                StatusTitle.Text = "PC Not Paired";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)); // Amber
-                StatusDetail.Text = "This PC has not been paired with an iPhone Face ID device.";
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.WAITING_FACE_ID:
-                StatusTitle.Text = "Waiting for iPhone Face ID...";
+                StatusTitle.Text = "Waiting for approval";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)); // Sky
-                StatusDetail.Text = message;
+                StatusDetail.Text = message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase) ? "Keep your iPhone nearby" : "Check your iPhone";
+                if (message.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase)) { StatusTitle.Text = "Connecting via Bluetooth"; OnlineStatus.Text = "Offline"; BluetoothStatus.Text = "Bluetooth Connected"; }
                 break;
 
             case ShellState.APPROVED:
-                StatusTitle.Text = "Face ID Approved";
+                StatusTitle.Text = "Unlocked";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
-                StatusDetail.Text = "Unlocking...";
+                StatusDetail.Text = "Verifying approval";
                 break;
 
             case ShellState.REJECTED:
-                StatusTitle.Text = "Face ID Rejected";
+                StatusTitle.Text = "Request declined";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
-                StatusDetail.Text = "Face ID was rejected on iPhone.";
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.TIMEOUT:
-                StatusTitle.Text = "Face ID Timed Out";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)); // Amber
-                StatusDetail.Text = "Unlock request timed out. Make sure iPhone is nearby and unlocked.";
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.OFFLINE:
             case ShellState.ERROR:
-                StatusTitle.Text = "Authorization Error";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
-                StatusDetail.Text = message;
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.INPUT_GUARD_FAILED:
-                StatusTitle.Text = "Input Guard Failed";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71));
-                StatusDetail.Text = $"Shell Gate remains locked because keyboard lockdown failed. {message}";
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.STARTING_DESKTOP:
-                StatusTitle.Text = "Starting Windows Desktop...";
+                StatusTitle.Text = "Unlocked";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
-                StatusDetail.Text = "Launching explorer.exe...";
+                StatusDetail.Text = "Verifying approval";
                 break;
 
             case ShellState.DESKTOP_FAILED:
-                StatusTitle.Text = "Desktop Failed to Start";
+                StatusTitle.Text = "Unable to connect";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0xF8, 0x71, 0x71)); // Red
-                StatusDetail.Text = message;
-                BtnRetryDesktop.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Retrying automatically...";
                 break;
 
             case ShellState.TEST_PASS:
-                StatusTitle.Text = "FACE ID APPROVED — TEST PASS";
+                StatusTitle.Text = "Unlocked";
                 StatusTitle.Foreground = new SolidColorBrush(Color.FromRgb(0x34, 0xD3, 0x99)); // Emerald
-                StatusDetail.Text = "Explorer launch would occur in Shell Mode. Test complete.";
-                BtnTryAgain.Visibility = Visibility.Visible;
+                StatusDetail.Text = "Test approval complete";
                 break;
         }
 
@@ -145,22 +143,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void BtnTryAgain_Click(object sender, RoutedEventArgs e)
-    {
-        BtnTryAgain.Visibility = Visibility.Collapsed;
-        await _engine.TryStartFaceIdAttemptAsync();
-    }
-
-    private void BtnRetryDesktop_Click(object sender, RoutedEventArgs e)
-    {
-        BtnRetryDesktop.Visibility = Visibility.Collapsed;
-        _engine.RetryExplorerSafe();
-    }
-
-    private void BtnExitTest_Click(object sender, RoutedEventArgs e)
-    {
-        Application.Current.Shutdown(0);
-    }
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {

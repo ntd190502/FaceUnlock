@@ -26,6 +26,7 @@ public partial class App : Application
 
         // Determine Shell Mode: --test vs --shell (default is --shell)
         ShellMode mode = ShellMode.Shell;
+        string? previewState = null;
         foreach (var arg in e.Args)
         {
             if (arg.Equals("--test", StringComparison.OrdinalIgnoreCase))
@@ -37,6 +38,7 @@ public partial class App : Application
                 mode = ShellMode.Shell;
             }
         }
+        for (var i = 0; i + 1 < e.Args.Length; i++) if (e.Args[i].Equals("--test-state", StringComparison.OrdinalIgnoreCase)) previewState = e.Args[i + 1];
 
         // Single instance protection
         bool createdNew;
@@ -50,7 +52,7 @@ public partial class App : Application
 
         _engine = new ShellEngine(mode);
         Exit += (_, _) => _engine?.Shutdown();
-        var window = new MainWindow(_engine);
+        var window = new MainWindow(_engine, previewState);
         window.Show();
     }
 
