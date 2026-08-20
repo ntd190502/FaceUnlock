@@ -91,6 +91,7 @@
 - iOS GitHub Actions build generates an IPA from current sources.
 - Static checks confirm no runtime `PushManager`, `ApnsClient`, `aps-environment`, or `remote-notification` references remain.
 - Static checks confirm BLE framing codec exists on both iOS and Windows.
+- Static checks confirm retired Credential Provider/AuthPackage/CompanionCDF source and `issue_lsa_ticket` IPC are absent.
 
 ## K. Phase F.2 Mandatory Shell Watchdog
 
@@ -101,3 +102,11 @@
 - Verify wrong SID/session/request, approved-but-not-reserved grants, old grants and replay cannot authorize Explorer.
 - Verify an unlocked session neither restarts an exited Shell nor terminates Explorer.
 - Verify duplicate Shell processes retain one canonical instance and Test Mode/disabled Shell Gate never touches the user's Explorer.
+
+## L. Legacy Security Migration
+
+- Simulate the historical FaceUnlock CLSID, AuthPackage registry values, installed DLL/scripts, System32 DLL, and legacy LSA secret.
+- Run `Cleanup-PhaseE.ps1` twice and verify both runs succeed without reboot.
+- Verify only the FaceUnlock CLSID/package is removed; `msv1_0`, Kerberos, and unrelated security packages remain.
+- Verify obsolete files are removed while `FaceUnlockShell.exe` and pairing `config.json` remain.
+- Build the Setup artifact and verify its staging/portable contents contain Agent, Service, Shell, Shell Gate scripts, diagnostics, and migration cleanup, with no retired DLL or enable/disable script.

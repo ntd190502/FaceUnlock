@@ -2,10 +2,10 @@
 
 Baseline inspected: `a18d27409dadf4b53226b1352b8c2a606ee9a108`.
 
-The current source includes Phase F Shell Gate, Phase F.1 connectivity-aware
-Online/BLE transport, safe installer orchestration, and all tracked Windows/iOS/
-hosting build inputs. Phase E remains experimental/deprecated and is not enabled by
-the installer.
+The current source includes Phase F/F.1/F.2 Shell Gate, connectivity-aware Online/BLE
+transport, Telegram plain approval URLs, safe installer orchestration, and all tracked
+Windows/iOS/hosting build inputs. The retired Credential Provider, Phase E AuthPackage,
+CompanionCDF, their harnesses, dead IPC, and runtime secret store were removed.
 
 ## Added/fixed
 
@@ -18,11 +18,12 @@ the installer.
 - Legacy iOS `deviceAPIToken` migration now immediately rewrites sanitized UserDefaults JSON after moving the token to Keychain.
 - CI static checks now assert the BLE codecs/security primitives exist and obsolete APNs runtime references do not return.
 - Protocol, architecture, security, test plan, limitations, manifest and release notes are synchronized with the current Telegram/foreground/BLE design.
+- Upgrade migration removes exact legacy registry entries/files, preserves `msv1_0`, unrelated providers, pairing and Shell Gate state, and never auto-reboots.
 
-## Scope deliberately not changed
+## Scope deliberately preserved
 
-- Windows Credential Provider / actual OS lock-screen credential serialization.
-- CompanionCDF reference.
+- Phase F/F.1/F.2 Shell Gate, Service watchdog, Explorer/input guards and one-time grant consumption.
+- Online/BLE logical-request behavior, Telegram plain URL flow, DPAPI PC token storage and Bluetooth leases.
 - Telegram bot secrets, live hosting config or DB credentials.
 
 ## Local validation performed
@@ -31,4 +32,4 @@ the installer.
 - Swift framing round-trip/reassembly self-test: PASS (1024-byte payload, 94 frames, out-of-order + duplicate-frame coverage).
 - Swift overlay syntax parse: PASS.
 - Package static checks / manifest stale-path checks: PASS when generated.
-- C# Windows build cannot be performed in this Linux container; a dependency-free C# BLE framing self-test is included and wired into GitHub Windows CI after applying/pushing.
+- Windows build/tests, migration simulation, PHP/Swift checks and Setup compilation are enforced by GitHub Actions.

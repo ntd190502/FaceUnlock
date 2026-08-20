@@ -395,7 +395,7 @@ public class Program
             var session6 = session + 6;
             RegisterShellRequest(reqId6, userSid, session6);
             // Inject with wrong SID so reserve_grant fails
-            worker.InjectApprovedGrantForTesting(reqId6, "S-1-5-21-DIFFERENT-SID", "TEST\\User6", "device-001", DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30, sessionId: session6, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId6, "S-1-5-21-DIFFERENT-SID", DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30, sessionId: session6, clientType: "shell");
             var reserveResp6 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId6, user_sid: userSid, session_id: session6, client_type: "shell", process_id: clientProcessId));
             Check(reserveResp6 != null && reserveResp6.status == LocalAuthStatus.Rejected, "TEST 6: Reserve rejected due to mismatch");
             Check(launcher6.StartProcessCount == 0, "TEST 6: Explorer not launched");
@@ -409,7 +409,7 @@ public class Program
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var session7 = session + 7;
             RegisterShellRequest(reqId7, userSid, session7);
-            worker.InjectApprovedGrantForTesting(reqId7, userSid, "TEST\\User7", "device-001", nowSec + 30, sessionId: session7, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId7, userSid, nowSec + 30, sessionId: session7, clientType: "shell");
             
             // Reserve passes
             var res7 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId7, user_sid: userSid, session_id: session7, client_type: "shell", process_id: clientProcessId));
@@ -430,7 +430,7 @@ public class Program
             var reqId8 = Guid.NewGuid().ToString("N");
             var session8 = session + 8;
             RegisterShellRequest(reqId8, userSid, session8);
-            worker.InjectApprovedGrantForTesting(reqId8, userSid, "TEST\\User8", "device-001", nowSec + 30, sessionId: session8, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId8, userSid, nowSec + 30, sessionId: session8, clientType: "shell");
 
             var res8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId8, user_sid: userSid, session_id: session8, client_type: "shell", process_id: clientProcessId));
             var con8 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId8, user_sid: userSid, session_id: session8, client_type: "shell", process_id: clientProcessId));
@@ -474,7 +474,7 @@ public class Program
             var reqId11 = Guid.NewGuid().ToString("N");
             var session11 = session + 11;
             RegisterShellRequest(reqId11, "S-1-5-21-LEGIT-SID", session11);
-            worker.InjectApprovedGrantForTesting(reqId11, "S-1-5-21-LEGIT-SID", "TEST\\User11", "device-001", nowSec + 30, sessionId: session11, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId11, "S-1-5-21-LEGIT-SID", nowSec + 30, sessionId: session11, clientType: "shell");
             var res11 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId11, user_sid: "S-1-5-21-ATTACKER-SID", session_id: session11, client_type: "shell", process_id: clientProcessId));
             Check(res11 != null && res11.status == LocalAuthStatus.Rejected, "TEST 11: Wrong SID consume rejected", $"status={res11?.status}");
 
@@ -485,7 +485,7 @@ public class Program
             var reqId12 = Guid.NewGuid().ToString("N");
             var session12 = session + 12;
             RegisterShellRequest(reqId12, userSid, session12);
-            worker.InjectApprovedGrantForTesting(reqId12, userSid, "TEST\\User12", "device-001", nowSec + 30, sessionId: session12, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId12, userSid, nowSec + 30, sessionId: session12, clientType: "shell");
             var res12 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId12, user_sid: userSid, session_id: session12 + 999, client_type: "shell", process_id: clientProcessId));
             Check(res12 != null && res12.status == LocalAuthStatus.Rejected, "TEST 12: Wrong Session ID consume rejected", $"status={res12?.status}");
 
@@ -496,7 +496,7 @@ public class Program
             var reqId13 = Guid.NewGuid().ToString("N");
             var session13 = session + 13;
             RegisterShellRequest(reqId13, userSid, session13);
-            worker.InjectApprovedGrantForTesting(reqId13, userSid, "TEST\\User13", "device-001", nowSec - 10, sessionId: session13, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId13, userSid, nowSec - 10, sessionId: session13, clientType: "shell");
             var res13 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId13, user_sid: userSid, session_id: session13, client_type: "shell", process_id: clientProcessId));
             Check(res13 != null && (res13.status == LocalAuthStatus.Expired || res13.status == LocalAuthStatus.NotFound), "TEST 13: Expired grant rejected", $"status={res13?.status}");
 
@@ -507,7 +507,7 @@ public class Program
             var reqId14 = Guid.NewGuid().ToString("N");
             var session14 = session + 14;
             RegisterShellRequest(reqId14, userSid, session14);
-            worker.InjectApprovedGrantForTesting(reqId14, userSid, "TEST\\User14", "device-001", nowSec + 30, sessionId: session14, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqId14, userSid, nowSec + 30, sessionId: session14, clientType: "shell");
             var reserve14 = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "reserve_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));
             Check(reserve14 != null && reserve14.status == LocalAuthStatus.Reserved, "TEST 14: Reserve PASS");
             var res14a = await SendDirectIpcAsync(testPipe, new LocalAuthRequest(1, "consume_grant", reqId14, user_sid: userSid, session_id: session14, client_type: "shell", process_id: clientProcessId));

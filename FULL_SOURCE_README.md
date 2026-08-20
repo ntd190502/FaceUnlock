@@ -27,9 +27,9 @@ prefers Online approval, and uses connectivity-aware BLE fallback. Phase F.2 mak
 the SYSTEM service the per-session gate authority, restarts a killed Shell, and
 terminates Explorer processes created before a bound grant is consumed.
 
-The Windows source tree also includes Shell tests, IPC integration tests, BLE tests,
-Credential Provider and Authentication Package compatibility/harness source,
-installer source, and release scripts. Pairing stores the PC token in the DPAPI
+The Windows source tree includes Shell tests, IPC integration tests, BLE/transport
+tests, installer source, and release scripts. The retired Credential Provider,
+AuthPackage, CompanionCDF, and their harnesses are absent. Pairing stores the PC token in the DPAPI
 protected `pctoken.dpapi` store; it is never part of the source archive or config
 template. Explorer launches only after an approved grant is consumed.
 
@@ -39,3 +39,7 @@ Attention Sequence and is not blockable in user mode; administrative/Secure
 Attention Sequence remains available. While the Service is active and the session
 is locked, starting Explorer from Task Manager does not authorize the desktop and
 the watchdog terminates it. WinRE and Safe Mode remain unchanged.
+
+`windows/scripts/Cleanup-PhaseE.ps1` remains migration-only for upgrades from old
+installs. It removes exact FaceUnlock legacy registration/files, preserves the
+default Windows authentication stack and pairing state, and never reboots automatically.

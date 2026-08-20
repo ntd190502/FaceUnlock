@@ -20,7 +20,7 @@ public record OfflineUnlockPayload(
     string? online_session_id = null);
 public record OfflineBleResponse(string ok, string? session_id, string? signature, string? error);
 
-// Local IPC models for CredentialProvider / Shell <-> FaceUnlock.Service
+// Local IPC models for FaceUnlock Shell <-> FaceUnlock.Service.
 public sealed record LocalAuthRequest(
     int version,
     string command,
@@ -42,7 +42,6 @@ public sealed record LocalAuthResponse(
     string? message = null,
     long? expires_at = null,
     string? service_version = null,
-    string? ticket = null,
     string? user_sid = null,
     int? session_id = null
 );
@@ -65,7 +64,6 @@ public static class LocalAuthStatus
     public const string Busy = "busy";
     public const string Expired = "expired";
     public const string NotFound = "not_found";
-    public const string LsaSecretUnavailable = "lsa_secret_unavailable";
 }
 
 public sealed class LocalConfig {

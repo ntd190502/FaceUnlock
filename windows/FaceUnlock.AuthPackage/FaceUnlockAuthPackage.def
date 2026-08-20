@@ -1,8 +1,0 @@
-LIBRARY FaceUnlockAuthPackage
-EXPORTS
-    LsaApInitializePackage
-    LsaApLogonUserEx2
-    LsaApCallPackage
-    LsaApCallPackageUntrusted
-    LsaApCallPackagePassthrough
-    LsaApLogonTerminated

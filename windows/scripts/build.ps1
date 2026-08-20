@@ -21,7 +21,7 @@ try {
     dotnet run -c Release --no-restore --project .\FaceUnlock.ShellTests\FaceUnlock.ShellTests.csproj
 
     Write-Host 'Managed projects and Phase F Shell Gate tests passed.' -ForegroundColor Green
-    Write-Host 'CredentialProvider is separate and intentionally not built here: use CMake + Visual Studio x64.'
+    Write-Host 'Retired Credential Provider/AuthPackage projects are intentionally absent.'
 }
 finally {
     Pop-Location

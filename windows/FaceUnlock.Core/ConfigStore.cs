@@ -6,15 +6,12 @@ namespace FaceUnlock.Core;
 public sealed class ConfigStore {
     public string PathName { get; }
     private readonly string _tokenPath;
-    private readonly string _lsaSecretPath;
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("FaceUnlock-PC-Token-v1");
-    private static readonly byte[] LsaEntropy = Encoding.UTF8.GetBytes("FaceUnlock-LSA-Secret-v1");
 
     public ConfigStore(string? path=null) {
         PathName=path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"FaceUnlock","config.json");
         var dir=Path.GetDirectoryName(PathName)!; Directory.CreateDirectory(dir);
         _tokenPath=Path.Combine(dir,"pctoken.dpapi");
-        _lsaSecretPath=Path.Combine(dir,"lsa_secret.dpapi");
     }
 
     public LocalConfig Load() {
@@ -56,12 +53,6 @@ public sealed class ConfigStore {
             catch { raw=ProtectedData.Unprotect(enc,Entropy,DataProtectionScope.CurrentUser); }
             var token=Encoding.UTF8.GetString(raw); CryptographicOperations.ZeroMemory(raw); return token;
         } catch { return null; }
-    }
-
-    public byte[]? GetOrCreateLsaMachineSecret() {
-        var store = new LsaMachineSecretStore(_lsaSecretPath);
-        var (secret, _, _) = store.LoadOrCreate();
-        return secret;
     }
 }
 public sealed record PairingState(bool IsPaired,string Reason);

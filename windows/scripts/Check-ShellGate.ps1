@@ -92,16 +92,18 @@ $recStatus = if ($hasRecovery) { "PRESENT" } else { "MISSING" }
 $recColor  = if ($hasRecovery) { "Green" } else { "Red" }
 Write-Host "Recovery script:  $recStatus" -ForegroundColor $recColor
 
-# 7. LSA Phase E check
+# 7. Retired stack migration check
 $lsaKeyPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
 $hasPhaseE = $false
 if (Test-Path $lsaKeyPath) {
     $authPackages = (Get-ItemProperty -Path $lsaKeyPath -Name "Authentication Packages" -ErrorAction SilentlyContinue)."Authentication Packages"
-    if ($authPackages -match "FaceUnlock") { $hasPhaseE = $true }
+    foreach ($package in @($authPackages)) {
+        if ([IO.Path]::GetFileNameWithoutExtension(([string]$package).Trim()) -ieq 'FaceUnlockAuthPackage') { $hasPhaseE = $true }
+    }
 }
 $phaseEStatus = if ($hasPhaseE) { "REGISTERED WARNING (Run Cleanup-PhaseE.ps1)" } else { "DISABLED" }
 $phaseEColor  = if ($hasPhaseE) { "Red" } else { "Green" }
-Write-Host "LSA Phase E:      $phaseEStatus" -ForegroundColor $phaseEColor
+Write-Host "Legacy migration: $phaseEStatus" -ForegroundColor $phaseEColor
 
 # 8. Security Level
 Write-Host "Security level:   PHASE F.2 MANDATORY PER-SESSION SHELL GATE" -ForegroundColor Cyan

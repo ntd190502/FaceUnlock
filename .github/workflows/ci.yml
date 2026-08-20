@@ -51,61 +51,23 @@ jobs:
       - name: Run BLE framing self-test
         run: dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj --configuration Release --no-restore
 
-      - name: Run FaceUnlock LSA Secret Store & Serialization Unit Tests
+      - name: Run FaceUnlock Transport & Bluetooth Lease Unit Tests
         run: dotnet run --project windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj --configuration Release --no-restore
 
       - name: Run FaceUnlock IPC Integration Tests
         run: dotnet run --project windows/FaceUnlock.IpcIntegrationTests/FaceUnlock.IpcIntegrationTests.csproj --configuration Release --no-restore
 
-      - name: Build FaceUnlock Credential Provider (Release)
-        run: |
-          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -A x64
-          cmake --build windows/CredentialProvider/build --config Release
+      - name: Test retired security stack upgrade migration
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-LegacyCleanup.ps1
 
-      - name: Verify FaceUnlockCredentialProvider.dll
+      - name: Verify retired stack source and IPC are absent
         shell: pwsh
         run: |
-          $dll = "windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll"
-          if (-not (Test-Path $dll)) { throw "Missing FaceUnlockCredentialProvider.dll at $dll" }
-          Write-Host "Found DLL: $dll"
-
-      - name: Build & Run Credential Provider Safety Harness
-        shell: pwsh
-        run: |
-          cmake -B windows/CredentialProviderHarness/build -S windows/CredentialProviderHarness -A x64
-          cmake --build windows/CredentialProviderHarness/build --config Release
-          $dll     = Resolve-Path "windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll"
-          $harness = "windows/CredentialProviderHarness/build/Release/CredentialProviderHarness.exe"
-          Write-Host "Running safety harness against: $dll"
-          & $harness "$dll"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Safety Harness FAILED with exit code $LASTEXITCODE"
-          }
-
-      - name: Build FaceUnlock Authentication Package (Release)
-        shell: pwsh
-        run: |
-          cmake -B windows/FaceUnlock.AuthPackage/build -S windows/FaceUnlock.AuthPackage -A x64
-          cmake --build windows/FaceUnlock.AuthPackage/build --config Release
-
-      - name: Verify FaceUnlockAuthPackage.dll
-        shell: pwsh
-        run: |
-          $dll = "windows/FaceUnlock.AuthPackage/build/Release/FaceUnlockAuthPackage.dll"
-          if (-not (Test-Path $dll)) { throw "Missing FaceUnlockAuthPackage.dll at $dll" }
-          Write-Host "Found DLL: $dll"
-
-      - name: Build & Run AuthPackage Safety & Fuzz Harness
-        shell: pwsh
-        run: |
-          cmake -B windows/FaceUnlock.AuthPackageHarness/build -S windows/FaceUnlock.AuthPackageHarness -A x64
-          cmake --build windows/FaceUnlock.AuthPackageHarness/build --config Release
-          $harness = "windows/FaceUnlock.AuthPackageHarness/build/Release/FaceUnlockAuthPackageHarness.exe"
-          Write-Host "Running AuthPackage harness and 10,000 fuzz tests: $harness"
-          & $harness
-          if ($LASTEXITCODE -ne 0) {
-            throw "AuthPackage Safety Harness FAILED with exit code $LASTEXITCODE"
-          }
+          $removed = @('windows/CredentialProvider','windows/CredentialProviderHarness','windows/FaceUnlock.AuthPackage','windows/FaceUnlock.AuthPackageHarness','windows/CompanionCDF','windows/FaceUnlock.Core/LsaMachineSecretStore.cs')
+          foreach ($path in $removed) { if (Test-Path $path) { throw "Retired source remains: $path" } }
+          $runtime = Get-Content windows/FaceUnlock.Core/Models.cs,windows/FaceUnlock.Service/UnlockWorker.cs -Raw
+          if ($runtime -match 'issue_lsa_ticket|LsaMachineSecretStore|lsa_secret_unavailable') { throw 'Retired LSA IPC/runtime reference remains' }
 
       - name: Verify BLE framing source is compiled
         shell: pwsh
@@ -182,6 +144,10 @@ jobs:
         run: |
           if grep -E 'FaceUnlock/Push/PushManager.swift|hosting/src/ApnsClient.php' MANIFEST.txt; then
             echo "Error: manifest still references removed APNs runtime files"
+            exit 1
+          fi
+          if grep -E 'CredentialProvider/|CredentialProviderHarness/|FaceUnlock.AuthPackage/|FaceUnlock.AuthPackageHarness/|CompanionCDF/|LsaMachineSecretStore.cs' FULL_SOURCE_MANIFEST.txt; then
+            echo "Error: full manifest still references retired Windows security source"
             exit 1
           fi
 

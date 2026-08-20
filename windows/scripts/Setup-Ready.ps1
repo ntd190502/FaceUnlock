@@ -1,6 +1,7 @@
 <#
-Installer orchestration for Phase F/F.1/F.2. This script is intentionally limited to
-the post-logon Shell Gate and never touches LSA, passwords, PIN, or AutoLogon.
+Installer orchestration for Phase F/F.1/F.2. The only LSA/credential-provider action
+is an idempotent removal of the retired FaceUnlock stack during upgrade migration.
+It never changes passwords, PIN, AutoLogon, or any non-FaceUnlock provider.
 #>
 [CmdletBinding()]
 param(
@@ -17,6 +18,7 @@ $shellExe = Join-Path $InstallDir 'FaceUnlockShell.exe'
 $recovery = Join-Path $InstallDir 'FaceUnlock-Shell-Recovery.ps1'
 $enable = Join-Path $InstallDir 'Enable-ShellGate.ps1'
 $disable = Join-Path $InstallDir 'Disable-ShellGate.ps1'
+$legacyCleanup = Join-Path $InstallDir 'Cleanup-PhaseE.ps1'
 $configPath = Join-Path $dataDir 'config.json'
 $winlogon = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
@@ -37,9 +39,13 @@ function ShellGateEnabled {
     try { return ((Get-ItemProperty -Path $winlogon -Name Shell -ErrorAction SilentlyContinue).Shell -match 'FaceUnlockShell\.exe') }
     catch { return $false }
 }
-function PhaseEActive {
-    try { return ((Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'Authentication Packages' -ErrorAction SilentlyContinue).'Authentication Packages' -match 'FaceUnlock') }
-    catch { return $false }
+function Invoke-LegacySecurityMigration {
+    if (-not (Test-Path -LiteralPath $legacyCleanup -PathType Leaf)) {
+        throw "Required upgrade migration script is missing: $legacyCleanup"
+    }
+    Log '[MIGRATION] retired Windows security stack cleanup start'
+    & $legacyCleanup -Force -InstallDir $InstallDir
+    Log '[MIGRATION] retired Windows security stack cleanup PASS'
 }
 function RestoreExplorer {
     & $disable -Force
@@ -87,6 +93,8 @@ function EnsureService {
     throw 'Service health failed: service did not reach Running within 10 seconds'
 }
 
+Invoke-LegacySecurityMigration
+
 if ($Mode -eq 'uninstall') {
     Log 'uninstall requested: restoring explorer before removing binaries'
     RestoreExplorer
@@ -127,8 +135,6 @@ try {
         Log '[FINAL] paired=False service=Running shell=Disabled desktop=Explorer ready=False'
         exit 0
     }
-    if (PhaseEActive) { throw 'Deprecated Phase E LSA package is active; Shell Gate will not be enabled' }
-
     if ($wasEnabled -or $installMode -eq 'fresh') {
         & $enable -Force -CustomShellPath $shellExe
         if (-not (ShellGateEnabled)) { throw 'Shell Gate registry verification failed' }

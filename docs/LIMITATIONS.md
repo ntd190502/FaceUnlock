@@ -2,7 +2,7 @@
 
 ## Windows passwordless unlock
 
-The iPhone signature is an authentication/approval signal, but the current repository does **not** turn that signal into a complete Windows logon credential. `FaceUnlock.Agent` can verify approval, while the Credential Provider remains a separate scaffold/phase.
+The iPhone signature is an authentication/approval signal, but the current repository does **not** turn that signal into a complete Windows logon credential. It authorizes the post-logon Phase F/F.2 Shell Gate only; the retired Windows credential stack is not shipped.
 
 A normal Credential Provider must serialize credentials accepted by Windows authentication infrastructure. Do not replace that boundary with an undocumented Winlogon/LSA bypass, and keep the built-in PIN/password providers enabled as the recovery path.
 

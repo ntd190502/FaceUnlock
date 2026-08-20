@@ -50,18 +50,6 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o windows/dist/publish-shell
 
-      - name: Build FaceUnlockCredentialProvider.dll x64
-        shell: pwsh
-        run: |
-          cmake -B windows/CredentialProvider/build -S windows/CredentialProvider -A x64
-          cmake --build windows/CredentialProvider/build --config Release
-
-      - name: Build FaceUnlockAuthPackage.dll x64
-        shell: pwsh
-        run: |
-          cmake -B windows/FaceUnlock.AuthPackage/build -S windows/FaceUnlock.AuthPackage -A x64
-          cmake --build windows/FaceUnlock.AuthPackage/build --config Release
-
       - name: Prepare Installer Staging Directory
         shell: pwsh
         run: |
@@ -70,24 +58,29 @@ jobs:
           Copy-Item windows/dist/publish-service/FaceUnlock.Service.exe windows/installer/bin/
           Copy-Item windows/dist/publish-shell/FaceUnlockShell.exe windows/installer/bin/
           Copy-Item windows/dist/publish-agent/FaceUnlock.Core.dll windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/CredentialProvider/build/Release/FaceUnlockCredentialProvider.dll windows/installer/bin/
-          Copy-Item windows/FaceUnlock.AuthPackage/build/Release/FaceUnlockAuthPackage.dll windows/installer/bin/ -ErrorAction SilentlyContinue
           Copy-Item windows/scripts/FaceUnlock-Shell-Recovery.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Enable-ShellGate.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Disable-ShellGate.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Check-ShellGate.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Cleanup-PhaseE.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Setup-Ready.ps1 windows/installer/bin/
-          Copy-Item FaceUnlock-Recovery.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/CredentialProvider/Enable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/CredentialProvider/Disable-CredentialProvider.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/scripts/Enable-AuthPackage.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/scripts/Disable-AuthPackage.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
-          Copy-Item windows/scripts/Check-AuthPackage.ps1 windows/installer/bin/ -ErrorAction SilentlyContinue
+
+          $required = @('FaceUnlock.Agent.exe','FaceUnlock.Service.exe','FaceUnlockShell.exe','Setup-Ready.ps1','Enable-ShellGate.ps1','Disable-ShellGate.ps1','Check-ShellGate.ps1','Cleanup-PhaseE.ps1')
+          foreach ($name in $required) {
+            if (-not (Test-Path (Join-Path windows/installer/bin $name))) { throw "Missing current installer file: $name" }
+          }
+          $forbidden = @('FaceUnlockCredentialProvider.dll','FaceUnlockAuthPackage.dll','Enable-CredentialProvider.ps1','Disable-CredentialProvider.ps1','Enable-AuthPackage.ps1','Disable-AuthPackage.ps1','Check-AuthPackage.ps1')
+          foreach ($name in $forbidden) {
+            if (Test-Path (Join-Path windows/installer/bin $name)) { throw "Legacy file leaked into installer staging: $name" }
+          }
 
           # Also prepare Portable directory
           New-Item -ItemType Directory -Path windows/dist/Portable -Force
           Copy-Item windows/installer/bin/* windows/dist/Portable/
+
+      - name: Test legacy upgrade migration
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/Test-LegacyCleanup.ps1
 
       - name: Install Inno Setup & Compile Installer
         shell: pwsh

@@ -182,43 +182,13 @@ public class Program
                 Check(malformedResp != null && malformedResp.status == LocalAuthStatus.Error, "TEST G: malformed JSON returns Error response cleanly without service crash");
             }
 
-            // TEST H: issue_lsa_ticket on invalid/non-existent grant rejects cleanly
-            Console.WriteLine("\n[Test H] issue_lsa_ticket on non-existent grant");
-            var reqIdH = Guid.NewGuid().ToString("N");
-            var ticketRespH = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdH, null, null, "S-1-5-21-0000", "TEST\\User"));
-            Check(ticketRespH != null && ticketRespH.status == LocalAuthStatus.NotFound, "TEST H: issue_lsa_ticket on non-existent grant returns NotFound");
-
-            // TEST I: issue_lsa_ticket on approved grant issues valid ticket
-            Console.WriteLine("\n[Test I] issue_lsa_ticket on approved grant");
-            var reqIdI = Guid.NewGuid().ToString("N");
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            worker.InjectApprovedGrantForTesting(reqIdI, "S-1-5-21-12345-67890", "TEST\\ValidUser", "device-test-001", nowSec + 30);
-            var ticketRespI = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdI, null, null, "S-1-5-21-12345-67890", "TEST\\ValidUser"));
-            Check(ticketRespI != null && ticketRespI.status == LocalAuthStatus.Approved && !string.IsNullOrWhiteSpace(ticketRespI.ticket),
-                "TEST I: issue_lsa_ticket returns Approved status and base64 ticket", $"status={ticketRespI?.status} msg={ticketRespI?.message} ticketLen={ticketRespI?.ticket?.Length}");
-
-            // TEST J: issue_lsa_ticket with wrong SID is rejected
-            Console.WriteLine("\n[Test J] issue_lsa_ticket with wrong SID");
-            var reqIdJ = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdJ, "S-1-5-21-11111-22222", "TEST\\UserJ", "device-test-001", nowSec + 30);
-            var ticketRespJ = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdJ, null, null, "S-1-5-21-WRONG-SID", "TEST\\UserJ"));
-            Check(ticketRespJ != null && ticketRespJ.status == LocalAuthStatus.Rejected,
-                "TEST J: issue_lsa_ticket with wrong SID is rejected with Rejected status", $"status={ticketRespJ?.status}");
-
-            // TEST K: issue_lsa_ticket on expired grant is rejected
-            Console.WriteLine("\n[Test K] issue_lsa_ticket on expired grant");
-            var reqIdK = Guid.NewGuid().ToString("N");
-            worker.InjectApprovedGrantForTesting(reqIdK, "S-1-5-21-12345-67890", "TEST\\UserK", "device-test-001", nowSec - 10);
-            var ticketRespK = await SendIpcCommandAsync(new LocalAuthRequest(1, "issue_lsa_ticket", reqIdK, null, null, "S-1-5-21-12345-67890", "TEST\\UserK"));
-            Check(ticketRespK != null && ticketRespK.status == LocalAuthStatus.Expired,
-                "TEST K: issue_lsa_ticket on expired grant returns Expired status", $"status={ticketRespK?.status}");
-
             // TEST M: reserve_grant & consume_grant for Shell
             Console.WriteLine("\n[Test M] Shell reserve_grant and consume_grant");
             var reqIdM = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdM, "S-1-5-21-99999", 2);
             await testBluetoothLeases.EnsureEnabledAsync(reqIdM);
-            worker.InjectApprovedGrantForTesting(reqIdM, "S-1-5-21-99999", "TEST\\ShellUser", "device-test-shell", nowSec + 30, sessionId: 2, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqIdM, "S-1-5-21-99999", nowSec + 30, sessionId: 2, clientType: "shell");
             
             var reserveRespM = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdM, null, null, "S-1-5-21-99999", "TEST\\ShellUser", session_id: 2, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespM != null && reserveRespM.status == LocalAuthStatus.Reserved, "TEST M: Shell reserve_grant succeeds", $"status={reserveRespM?.status}");
@@ -240,7 +210,7 @@ public class Program
             Console.WriteLine("\n[Test O] Shell reserve_grant with wrong SID");
             var reqIdO = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdO, "S-1-5-21-11111", 11);
-            worker.InjectApprovedGrantForTesting(reqIdO, "S-1-5-21-11111", "TEST\\UserO", "device-test-001", nowSec + 30, sessionId: 11, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqIdO, "S-1-5-21-11111", nowSec + 30, sessionId: 11, clientType: "shell");
             var reserveRespO = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdO, null, null, "S-1-5-21-WRONG-SID", "TEST\\UserO", session_id: 11, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespO != null && reserveRespO.status == LocalAuthStatus.Rejected,
                 "TEST O: reserve_grant with wrong SID is rejected", $"status={reserveRespO?.status}");
@@ -249,7 +219,7 @@ public class Program
             Console.WriteLine("\n[Test P] Shell reserve_grant with wrong Session ID");
             var reqIdP = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdP, "S-1-5-21-22222", 12);
-            worker.InjectApprovedGrantForTesting(reqIdP, "S-1-5-21-22222", "TEST\\UserP", "device-test-001", nowSec + 30, sessionId: 12, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqIdP, "S-1-5-21-22222", nowSec + 30, sessionId: 12, clientType: "shell");
             var reserveRespP = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdP, null, null, "S-1-5-21-22222", "TEST\\UserP", session_id: 999, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespP != null && reserveRespP.status == LocalAuthStatus.Rejected,
                 "TEST P: reserve_grant with wrong Session ID is rejected", $"status={reserveRespP?.status}");
@@ -258,7 +228,7 @@ public class Program
             Console.WriteLine("\n[Test Q] Shell consume_grant with wrong Session ID");
             var reqIdQ = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdQ, "S-1-5-21-33333", 13);
-            worker.InjectApprovedGrantForTesting(reqIdQ, "S-1-5-21-33333", "TEST\\UserQ", "device-test-001", nowSec + 30, sessionId: 13, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqIdQ, "S-1-5-21-33333", nowSec + 30, sessionId: 13, clientType: "shell");
             var consumeRespQ = await SendIpcCommandAsync(new LocalAuthRequest(1, "consume_grant", reqIdQ, null, null, "S-1-5-21-33333", "TEST\\UserQ", session_id: 888, client_type: "shell", process_id: clientProcessId));
             Check(consumeRespQ != null && consumeRespQ.status == LocalAuthStatus.Rejected,
                 "TEST Q: consume_grant with wrong Session ID is rejected", $"status={consumeRespQ?.status}");
@@ -267,7 +237,7 @@ public class Program
             Console.WriteLine("\n[Test R] Shell reserve_grant on expired grant");
             var reqIdR = Guid.NewGuid().ToString("N");
             RegisterShellRequest(reqIdR, "S-1-5-21-44444", 14);
-            worker.InjectApprovedGrantForTesting(reqIdR, "S-1-5-21-44444", "TEST\\UserR", "device-test-001", nowSec - 5, sessionId: 14, clientType: "shell");
+            worker.InjectApprovedGrantForTesting(reqIdR, "S-1-5-21-44444", nowSec - 5, sessionId: 14, clientType: "shell");
             var reserveRespR = await SendIpcCommandAsync(new LocalAuthRequest(1, "reserve_grant", reqIdR, null, null, "S-1-5-21-44444", "TEST\\UserR", session_id: 14, client_type: "shell", process_id: clientProcessId));
             Check(reserveRespR != null && (reserveRespR.status == LocalAuthStatus.Expired || reserveRespR.status == LocalAuthStatus.NotFound),
                 "TEST R: reserve_grant on expired grant returns Expired or NotFound", $"status={reserveRespR?.status}");

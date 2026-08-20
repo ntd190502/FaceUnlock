@@ -56,14 +56,6 @@
 ./ios/scripts/build_ipa.sh
 ./ios/scripts/build_signed_ipa_ci.sh
 ./ios/scripts/build_unsigned_ipa.sh
-./windows/CompanionCDF/CompanionAuthReference.cs
-./windows/CompanionCDF/README.md
-./windows/CredentialProvider/CMakeLists.txt
-./windows/CredentialProvider/FaceUnlockCredentialProvider.cpp
-./windows/CredentialProvider/FaceUnlockCredentialProvider.h
-./windows/CredentialProvider/README.md
-./windows/CredentialProvider/Register.ps1
-./windows/CredentialProvider/dllmain.cpp
 ./windows/Directory.Build.props
 ./windows/FaceUnlock.Agent/App.xaml
 ./windows/FaceUnlock.Agent/App.xaml.cs

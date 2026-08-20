@@ -32,7 +32,7 @@ bound to one device-bound session, expires with that session, and cannot approve
 completed, rejected, expired, or cancelled request. The hosting server never receives
 or stores the Windows PIN/password.
 
-**Scope note:** the flow above completes FaceUnlock biometric approval. The current `CredentialProvider` remains a scaffold; a successful phone approval does not by itself bypass Windows/LSA or automatically unlock the Windows logon session.
+**Scope note:** the flow above completes FaceUnlock biometric approval for the post-logon Shell Gate. The repository intentionally contains no Windows Credential Provider or custom authentication package and does not bypass Windows/LSA logon.
 
 ## Foreground app polling path
 
@@ -130,3 +130,10 @@ If automatic discovery fails, Windows displays a QR containing the same signed o
 - One-time unlock challenges and status transitions (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `CANCELLED`).
 - Plain Telegram HTTPS-link dispatch with hashed, opaque approval tokens; no Telegram callback is required.
 - Server-side ECDSA verification before a session becomes `APPROVED`.
+
+## Legacy upgrade migration
+
+The old Credential Provider, Phase E AuthPackage, CompanionCDF reference, and their
+harnesses have been removed. The installer retains only `Cleanup-PhaseE.ps1` as an
+idempotent migration: it removes the exact historical FaceUnlock CLSID/package,
+preserves `msv1_0` and unrelated providers, cleans obsolete files, and never reboots.

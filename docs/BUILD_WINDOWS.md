@@ -15,9 +15,13 @@ The build script restores/builds:
 1. `FaceUnlock.Core`
 2. `FaceUnlock.Agent`
 3. `FaceUnlock.Service`
-4. `FaceUnlock.BleFrameSelfTest`, then runs the BLE framing round-trip self-test.
+4. `FaceUnlock.Shell`
+5. Shell Gate, IPC, transport/Bluetooth lease, and BLE framing tests.
 
-`CredentialProvider` is deliberately separate and is **not** part of this phase/build. Build it only via its own CMake/Visual Studio flow when working on that later phase.
+The retired Credential Provider/AuthPackage projects and their harnesses are not
+part of the repository or build. `Cleanup-PhaseE.ps1` is packaged only for upgrade
+migration. The Windows release workflow publishes Agent, Service, and Shell, validates
+the installer staging set, then compiles `FaceUnlock-Setup.exe` with Inno Setup 6.
 
 Install the service only after Agent online/BLE approval tests pass:
 

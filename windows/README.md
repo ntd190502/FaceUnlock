@@ -2,11 +2,12 @@
 
 - `FaceUnlock.Core`: API, crypto, config, BLE.
 - `FaceUnlock.Agent`: WPF pairing/test UI.
-- `FaceUnlock.Service`: Windows Service/named-pipe base.
-- `CredentialProvider`: safe COM scaffold; not a passwordless unlock bypass.
-- `CompanionCDF`: restricted Microsoft API reference.
+- `FaceUnlock.Service`: Windows Service, online/BLE broker, and Phase F.2 gate authority.
+- `FaceUnlock.Shell`: post-logon Shell Gate with input guard.
 
-Start with the Agent. Do not install the Credential Provider until online/BLE approval tests pass.
+The retired Credential Provider, Phase E AuthPackage, CompanionCDF reference, and
+their harnesses are not part of the source or installer. `Cleanup-PhaseE.ps1` is
+retained only for safe upgrade migration from machines that previously installed them.
 
 Online and BLE are transports for the same logical Windows request. BLE retries
 rotate cryptographic sessions without creating another Face ID ceremony. Bluetooth

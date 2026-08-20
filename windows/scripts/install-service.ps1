@@ -25,7 +25,7 @@ sc.exe delete "FaceUnlock Service" 2>$null | Out-Null
 Start-Sleep -Seconds 1
 
 sc.exe create "FaceUnlock Service" binPath= "`"$exe`"" start= auto
-sc.exe description "FaceUnlock Service" "FaceUnlock Local Authentication Broker for Windows Credential Provider"
+sc.exe description "FaceUnlock Service" "FaceUnlock Phase F Shell Gate and phone approval broker"
 sc.exe failure "FaceUnlock Service" reset= 86400 actions= restart/5000/restart/10000/restart/60000
 sc.exe start "FaceUnlock Service"
 

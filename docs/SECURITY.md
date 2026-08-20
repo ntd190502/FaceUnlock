@@ -45,4 +45,11 @@ For higher-assurance deployments, add an independent local comparison of the iPh
 - Telegram account/bot compromise can expose metadata and trigger/open session links, but the link alone cannot create a valid iPhone signature.
 - Denial of service or metadata observation by the hosting provider.
 - iOS background BLE scheduling/termination is controlled by iOS; QR/foreground fallback remains necessary.
-- The current Credential Provider is a scaffold. Phone approval is not itself a generic Windows/LSA passwordless credential.
+- FaceUnlock deliberately ships no Credential Provider or custom authentication package. Phone approval authorizes only the post-logon Shell Gate, not generic Windows/LSA passwordless logon.
+
+## Retired stack migration
+
+`Cleanup-PhaseE.ps1` is migration-only. It removes only the historical FaceUnlock
+CLSID and `FaceUnlockAuthPackage` values, verifies `msv1_0` remains registered,
+preserves unrelated authentication/security packages and pairing state, schedules
+locked legacy DLL deletion for the next reboot, and never requests a reboot itself.
