@@ -49,7 +49,8 @@ jobs:
           if ($shell -notmatch 'Retrying automatically') { throw 'Missing Shell retry state' }
           if ($agent -notmatch 'RestartService_Click') { throw 'Missing Agent service recovery control' }
           if ($agent -notmatch 'CancellationTokenSource') { throw 'Pair/test cancellation missing' }
-          if ($ble -notmatch 'TimeSpan.FromSeconds\(3\)') { throw 'BLE candidate timeout is not bounded' }
+          if ($ble -match 'deviceTimeout\s*=\s*remaining\s*<\s*TimeSpan\.FromSeconds\(3\)') { throw 'BLE candidate timeout regression: iPhone GATT handshake capped at 3 seconds' }
+          if ($ble -notmatch 'deviceTimeout\s*=\s*remaining') { throw 'BLE paired-device candidate must receive the remaining scan budget' }
           if ($ble -notmatch 'PhysicalBleTransaction') { throw 'BLE physical transactions are not serialized' }
           if ($lease -notmatch 'bluetooth-owned.marker') { throw 'Bluetooth ownership is not persisted across Service restart' }
           if ($lease -notmatch 'recovered persisted FaceUnlock radio ownership') { throw 'Bluetooth persisted ownership recovery is missing' }
