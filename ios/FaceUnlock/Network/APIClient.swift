@@ -25,7 +25,18 @@ final class APIClient {
                           code: (response as? HTTPURLResponse)?.statusCode ?? -1,
                           userInfo: [NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "HTTP error"])
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch let DecodingError.keyNotFound(key, _) {
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response is missing required field: \(key.stringValue)"])
+        } catch let DecodingError.valueNotFound(_, context) {
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has null required field: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+        } catch let DecodingError.typeMismatch(_, context) {
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has invalid field type: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+        } catch let DecodingError.dataCorrupted(context) {
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response contains invalid data: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+        } catch {
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response could not be decoded safely"])
+        }
     }
 
     func completePair(_ payload: PairingPayload) async throws -> PairCompleteResponse {
