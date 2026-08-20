@@ -29,11 +29,11 @@ final class APIClient {
         catch let DecodingError.keyNotFound(key, _) {
             throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response is missing required field: \(key.stringValue)"])
         } catch let DecodingError.valueNotFound(_, context) {
-            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has null required field: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has null required field: \(context.codingPath.last?.stringValue ?? "unknown")"])
         } catch let DecodingError.typeMismatch(_, context) {
-            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has invalid field type: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response has invalid field type: \(context.codingPath.last?.stringValue ?? "unknown")"])
         } catch let DecodingError.dataCorrupted(context) {
-            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response contains invalid data: \(context.codingPath.last?.stringValue ?? \"unknown\")"])
+            throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response contains invalid data: \(context.codingPath.last?.stringValue ?? "unknown")"])
         } catch {
             throw NSError(domain: "FaceUnlock.API", code: -2, userInfo: [NSLocalizedDescriptionKey: "Hosting response could not be decoded safely"])
         }
