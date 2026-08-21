@@ -6,6 +6,13 @@ $db=new Database($config['db']); $auth=new Auth($db); $audit=new AuditLog($db); 
 $method=$_SERVER['REQUEST_METHOD']; $path=parse_url($_SERVER['REQUEST_URI'],PHP_URL_PATH)?:'/'; if(($i=strpos($path,'/v1/control/'))!==false)$path=substr($path,$i);
 function pairing(Database $db,string $pc,string $dev):bool{return (bool)$db->one("SELECT id FROM pc_device_pairings WHERE pc_id=? AND device_id=? AND status='ACTIVE'",[$pc,$dev]);}
 function cleanCommands(Database $db):void{$db->exec("UPDATE remote_commands SET status='EXPIRED',completed_at=NOW() WHERE status IN ('PENDING','RUNNING') AND expires_at<?",[time()]);}
+function commandPayloadForResponse(?string $json):object{
+ if($json===null||trim($json)==='')return new stdClass();
+ $decoded=json_decode($json);
+ if(is_object($decoded))return $decoded;
+ if(is_array($decoded))return (object)$decoded;
+ return new stdClass();
+}
 cleanCommands($db);
 $allowed=['status','lock','restart','shutdown','screenshot','apps','close_app','clipboard_get','clipboard_set','file_upload','clipboard_file_download'];
 if($method==='POST'&&$path==='/v1/control/command'){
@@ -22,7 +29,7 @@ if($method==='GET'&&preg_match('#^/v1/control/result/([^/]+)$#',$path,$m)){
 }
 if($method==='GET'&&$path==='/v1/control/pending'){
  $pc=$auth->pc(); $r=$db->transaction(function()use($db,$pc){$r=$db->one("SELECT * FROM remote_commands WHERE pc_id=? AND status='PENDING' AND expires_at>=? ORDER BY created_at LIMIT 1 FOR UPDATE",[$pc['id'],time()]); if($r)$db->exec("UPDATE remote_commands SET status='RUNNING',claimed_at=NOW() WHERE id=? AND status='PENDING'",[$r['id']]); return $r;});
- Util::out(['ok'=>true,'pending'=>(bool)$r,'command'=>$r?['id'=>$r['id'],'type'=>$r['command_type'],'payload'=>$r['payload']?json_decode($r['payload'],true):null]:null]);
+ Util::out(['ok'=>true,'pending'=>(bool)$r,'command'=>$r?['id'=>$r['id'],'type'=>$r['command_type'],'payload'=>commandPayloadForResponse($r['payload'])]:null]);
 }
 if($method==='POST'&&preg_match('#^/v1/control/result/([^/]+)$#',$path,$m)){
  $pc=$auth->pc(); $b=Util::jsonBody(); $status=(string)($b['status']??'ERROR'); if(!in_array($status,['DONE','ERROR'],true))Util::error('INVALID_STATUS',400);
