@@ -8,4 +8,21 @@ CREATE TABLE IF NOT EXISTS unlock_requests (id VARCHAR(64) PRIMARY KEY, pc_id VA
 CREATE TABLE IF NOT EXISTS unlock_request_candidates (request_id VARCHAR(64) NOT NULL, device_id VARCHAR(64) NOT NULL, state ENUM('PENDING','APPROVED','REJECTED','EXPIRED','LATE') NOT NULL DEFAULT 'PENDING', notified_at TIMESTAMP NULL, seen_at TIMESTAMP NULL, responded_at TIMESTAMP NULL, PRIMARY KEY(request_id,device_id), KEY idx_candidates_device_state(device_id,state), CONSTRAINT fk_candidates_request FOREIGN KEY(request_id) REFERENCES unlock_requests(id) ON DELETE CASCADE, CONSTRAINT fk_candidates_device FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE RESTRICT) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS rate_limit_events (bucket_hash CHAR(64) NOT NULL, bucket VARCHAR(64) NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY idx_rate_limit_bucket_time(bucket_hash,bucket,created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS security_audit_log (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, event VARCHAR(64) NOT NULL, result VARCHAR(32) NOT NULL, pc_id VARCHAR(64) NULL, device_id VARCHAR(64) NULL, request_id VARCHAR(64) NULL, ip_hash CHAR(64) NULL, metadata_json JSON NULL, KEY idx_audit_time(occurred_at), KEY idx_audit_pc_time(pc_id,occurred_at), KEY idx_audit_device_time(device_id,occurred_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-INSERT IGNORE INTO schema_migrations(version) VALUES ('001_initial_baseline'),('002_many_to_many_pairing'),('003_logical_unlock_requests'),('004_audit_security');
+CREATE TABLE IF NOT EXISTS remote_commands (
+  id VARCHAR(64) PRIMARY KEY,
+  pc_id VARCHAR(64) NOT NULL,
+  device_id VARCHAR(64) NOT NULL,
+  command_type VARCHAR(40) NOT NULL,
+  payload MEDIUMTEXT NULL,
+  result MEDIUMTEXT NULL,
+  status ENUM('PENDING','RUNNING','DONE','ERROR','EXPIRED') NOT NULL DEFAULT 'PENDING',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  claimed_at TIMESTAMP NULL,
+  completed_at TIMESTAMP NULL,
+  expires_at BIGINT NOT NULL,
+  INDEX idx_remote_pc_status (pc_id,status,created_at),
+  INDEX idx_remote_device (device_id,created_at),
+  CONSTRAINT fk_remote_pc FOREIGN KEY (pc_id) REFERENCES pcs(id) ON DELETE CASCADE,
+  CONSTRAINT fk_remote_device FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO schema_migrations(version) VALUES ('001_initial_baseline'),('002_many_to_many_pairing'),('003_logical_unlock_requests'),('004_audit_security'),('005_remote_control');
