@@ -59,21 +59,21 @@ struct PCControlView: View {
             Section(header: Text("Status")) { Text(status) }
         }
         .navigationTitle(pc.name)
-        .confirmationDialog("Choose a source", isPresented: $showFileSources, titleVisibility: .hidden) {
-            Button("Photo Library") { mediaSource = .photoLibrary; showMediaPicker = true }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) { Button("Take Photo or Video") { mediaSource = .camera; showMediaPicker = true } }
-            Button("Browse") { showFileImporter = true }
-            Button("Cancel", role: .cancel) { }
+        .actionSheet(isPresented: $showFileSources) {
+            var buttons: [ActionSheet.Button] = [
+                .default(Text("Photo Library")) { mediaSource = .photoLibrary; showMediaPicker = true }
+            ]
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                buttons.append(.default(Text("Take Photo or Video")) { mediaSource = .camera; showMediaPicker = true })
+            }
+            buttons.append(.default(Text("Browse")) { showFileImporter = true })
+            buttons.append(.cancel())
+            return ActionSheet(title: Text("Choose a source"), buttons: buttons)
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
             switch result { case .success(let urls): if let url = urls.first { sendFile(url) } else { status = "No file selected" }; case .failure(let error): status = error.localizedDescription }
         }
-        .sheet(isPresented: $showMediaPicker) {
-            MediaPicker(sourceType: mediaSource) { url in
-                showMediaPicker = false
-                if let url { sendFile(url) }
-            }
-        }
+        .sheet(isPresented: $showMediaPicker) { MediaPicker(sourceType: mediaSource) { url in showMediaPicker = false; if let url { sendFile(url) } } }
         .sheet(isPresented: $showShareSheet, onDismiss: { shareURL = nil }) { if let shareURL { ShareSheet(items: [shareURL]) } }
     }
 
