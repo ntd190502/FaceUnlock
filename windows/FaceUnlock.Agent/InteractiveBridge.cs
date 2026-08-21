@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Threading;
 
@@ -17,10 +18,12 @@ public sealed class InteractiveBridge : IDisposable
     DateTime _lastIncoming = DateTime.MinValue;
     string? _lastAppsRequest;
     string? _lastCloseRequest;
+    string? _lastLockRequest;
 
-    static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "FaceUnlock", "Bridge");
+    static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "Bridge");
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool LockWorkStation();
 
     static string F(string name)
     {
@@ -45,11 +48,9 @@ public sealed class InteractiveBridge : IDisposable
             HandleScreenshot();
             HandleAppsRequest();
             HandleCloseAppRequest();
+            HandleLockRequest();
         }
-        catch
-        {
-            // The interactive helper must never crash the desktop agent.
-        }
+        catch { }
     }
 
     void HandleClipboard()
@@ -81,10 +82,8 @@ public sealed class InteractiveBridge : IDisposable
     static void PublishClipboard()
     {
         var textMarker = F("clipboard-out.txt");
-        if (System.Windows.Clipboard.ContainsText())
-            File.WriteAllText(textMarker, System.Windows.Clipboard.GetText());
-        else
-            TryDelete(textMarker);
+        if (System.Windows.Clipboard.ContainsText()) File.WriteAllText(textMarker, System.Windows.Clipboard.GetText());
+        else TryDelete(textMarker);
 
         var fileMarker = F("clipboard-file.path");
         if (System.Windows.Clipboard.ContainsFileDropList())
@@ -114,24 +113,15 @@ public sealed class InteractiveBridge : IDisposable
         var requestId = File.ReadAllText(requestFile).Trim();
         if (string.IsNullOrWhiteSpace(requestId) || requestId == _lastAppsRequest) return;
         _lastAppsRequest = requestId;
-
-        var apps = Process.GetProcesses()
-            .Select(p =>
+        var apps = Process.GetProcesses().Select(p =>
+        {
+            try
             {
-                try
-                {
-                    var title = p.MainWindowTitle;
-                    return string.IsNullOrWhiteSpace(title)
-                        ? null
-                        : new { id = p.Id, name = p.ProcessName, title };
-                }
-                catch { return null; }
-            })
-            .Where(x => x != null)
-            .OrderBy(x => x!.name, StringComparer.OrdinalIgnoreCase)
-            .Take(200)
-            .ToArray();
-
+                var title = p.MainWindowTitle;
+                return string.IsNullOrWhiteSpace(title) ? null : new { id = p.Id, name = p.ProcessName, title };
+            }
+            catch { return null; }
+        }).Where(x => x != null).OrderBy(x => x!.name, StringComparer.OrdinalIgnoreCase).Take(200).ToArray();
         WriteJsonAtomic(F("apps.result.json"), new { request_id = requestId, apps });
     }
 
@@ -139,31 +129,41 @@ public sealed class InteractiveBridge : IDisposable
     {
         var requestFile = F("close-app.request.json");
         if (!File.Exists(requestFile)) return;
-
         using var doc = JsonDocument.Parse(File.ReadAllText(requestFile));
         var root = doc.RootElement;
         var requestId = root.TryGetProperty("request_id", out var rid) ? rid.GetString() : null;
         if (string.IsNullOrWhiteSpace(requestId) || requestId == _lastCloseRequest) return;
         _lastCloseRequest = requestId;
-
         if (!root.TryGetProperty("pid", out var pidElement) || !pidElement.TryGetInt32(out var pid))
         {
             WriteJsonAtomic(F("close-app.result.json"), new { request_id = requestId, ok = false, error = "pid required" });
             return;
         }
-
         try
         {
             using var process = Process.GetProcessById(pid);
             var graceful = process.CloseMainWindow();
-            if (!graceful)
-                process.Kill(true);
+            if (!graceful) process.Kill(true);
             WriteJsonAtomic(F("close-app.result.json"), new { request_id = requestId, ok = true, pid });
         }
-        catch (Exception ex)
+        catch (Exception ex) { WriteJsonAtomic(F("close-app.result.json"), new { request_id = requestId, ok = false, error = ex.Message, pid }); }
+    }
+
+    void HandleLockRequest()
+    {
+        var requestFile = F("lock.request");
+        if (!File.Exists(requestFile)) return;
+        var requestId = File.ReadAllText(requestFile).Trim();
+        if (string.IsNullOrWhiteSpace(requestId) || requestId == _lastLockRequest) return;
+        _lastLockRequest = requestId;
+
+        // Acknowledge before locking so the service can return DONE to the phone.
+        WriteJsonAtomic(F("lock.result.json"), new { request_id = requestId, ok = true });
+        _timer.Dispatcher.BeginInvoke(new Action(() =>
         {
-            WriteJsonAtomic(F("close-app.result.json"), new { request_id = requestId, ok = false, error = ex.Message, pid });
-        }
+            if (!LockWorkStation())
+                WriteJsonAtomic(F("lock.result.json"), new { request_id = requestId, ok = false, error = "LockWorkStation failed" });
+        }), DispatcherPriority.Background);
     }
 
     static void WriteJsonAtomic(string path, object value)
@@ -175,19 +175,14 @@ public sealed class InteractiveBridge : IDisposable
 
     static void TryDelete(string path)
     {
-        try
-        {
-            if (File.Exists(path)) File.Delete(path);
-        }
-        catch { }
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
     static void Capture(string path)
     {
         var bounds = System.Windows.Forms.SystemInformation.VirtualScreen;
         using var bitmap = new Bitmap(bounds.Width, bounds.Height);
-        using (var graphics = Graphics.FromImage(bitmap))
-            graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
+        using (var graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
         bitmap.Save(path, ImageFormat.Jpeg);
     }
 
