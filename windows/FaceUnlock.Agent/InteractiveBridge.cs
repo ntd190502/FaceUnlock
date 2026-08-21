@@ -80,15 +80,23 @@ public sealed class InteractiveBridge : IDisposable
 
     static void PublishClipboard()
     {
+        var textMarker = F("clipboard-out.txt");
         if (System.Windows.Clipboard.ContainsText())
-            File.WriteAllText(F("clipboard-out.txt"), System.Windows.Clipboard.GetText());
+            File.WriteAllText(textMarker, System.Windows.Clipboard.GetText());
+        else
+            TryDelete(textMarker);
 
+        var fileMarker = F("clipboard-file.path");
         if (System.Windows.Clipboard.ContainsFileDropList())
         {
             var files = System.Windows.Clipboard.GetFileDropList();
             if (files.Count > 0 && File.Exists(files[0]!))
-                File.WriteAllText(F("clipboard-file.path"), files[0]!);
+            {
+                File.WriteAllText(fileMarker, files[0]!);
+                return;
+            }
         }
+        TryDelete(fileMarker);
     }
 
     static void HandleScreenshot()
@@ -163,6 +171,15 @@ public sealed class InteractiveBridge : IDisposable
         var temp = path + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(value));
         File.Move(temp, path, true);
+    }
+
+    static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch { }
     }
 
     static void Capture(string path)
