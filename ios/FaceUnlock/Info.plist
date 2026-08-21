@@ -11,7 +11,8 @@
 <key>NSFaceIDUsageDescription</key><string>Face ID confirms that you approve unlocking your paired computer.</string>
 <key>NSBluetoothAlwaysUsageDescription</key><string>Bluetooth is used for offline unlock requests from your paired computer.</string>
 <key>NSBluetoothPeripheralUsageDescription</key><string>Bluetooth is used for offline unlock requests from your paired computer.</string>
-<key>NSCameraUsageDescription</key><string>The camera scans pairing and offline fallback QR codes.</string>
+<key>NSCameraUsageDescription</key><string>The camera scans pairing QR codes and can capture a photo or video to send to your paired computer.</string>
+<key>NSPhotoLibraryUsageDescription</key><string>Photo Library access lets you choose a photo or video to send to your paired computer.</string>
 <key>CFBundleURLTypes</key>
 <array><dict>
 <key>CFBundleURLName</key><string>io.faceunlock.app</string>
