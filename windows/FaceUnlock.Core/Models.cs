@@ -12,16 +12,14 @@ public record PairedDeviceInfo(string id, string name, string? nickname, string 
 public record DeviceListResponse(bool ok, List<PairedDeviceInfo> devices);
 public record OfflineUnlockPayload(string type,string session_id,string pc_id,string pc_name,string challenge,long expires_at,string pc_signature,string? logical_request_id=null,string? online_session_id=null);
 public record OfflineBleResponse(string ok,string? session_id,string? signature,string? error);
-
 public record RemoteCommand(string id,string type,Dictionary<string,object>? payload);
 public record RemotePendingResponse(bool ok,bool pending,RemoteCommand? command);
 public record RemoteResultRequest(string status,object result);
-
+public record HostedTransferFile(string id,string name,long size,string? mime);
+public record HostedTransferPending(bool ok,bool pending,HostedTransferFile? file);
 public sealed record LocalAuthRequest(int version,string command,string request_id,string? usage=null,string? username=null,string? user_sid=null,string? qualified_username=null,int? session_id=null,string? client_type=null,string? pc_id=null,int? process_id=null);
 public sealed record LocalAuthResponse(int version,string request_id,string status,string? message=null,long? expires_at=null,string? service_version=null,string? user_sid=null,int? session_id=null);
-
 public static class LocalAuthStatus { public const string Ok="ok",Pending="pending",WaitingConnectivity="waiting_connectivity",InternetRestored="internet_restored",Approved="approved",Reserved="reserved",Consumed="consumed",Released="released",Rejected="rejected",Timeout="timeout",Error="error",Cancelled="cancelled",NotPaired="not_paired",Busy="busy",Expired="expired",NotFound="not_found"; }
-
 public sealed class LocalConfig {
  public string ServerUrl { get; set; }="https://face.bobabliss.io.vn"; public string PcId { get; set; }=Guid.NewGuid().ToString("N"); public string PcName { get; set; }=Environment.MachineName;
  public string? PcToken { get; set; } public string? PairId { get; set; } public string? DeviceId { get; set; } public string? DevicePublicKeyPem { get; set; } public List<PairedDevice> Devices { get; set; }=new();
