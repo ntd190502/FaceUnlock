@@ -67,4 +67,32 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if($errors)$errorMessage=implode(' ',array_unique($errors));
     }
 }
-?><!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>FaceUnlock Upload</title><style>body{margin:0;background:#111315;color:#eee;font:15px system-ui}.box{max-width:900px;margin:30px auto;background:#191b1e;border:1px solid #45484d;border-radius:14px;padding:22px}.drop{border:2px dashed #555;border-radius:12px;min-height:330px;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center}.green{background:#169b45;color:white;border:0;border-radius:7px;padding:11px 18px;font-weight:600}.pick{margin:18px;max-width:90%}.hint{color:#999;font-size:26px}.ok{color:#69d58a}.err{color:#ff7b7b}.small{color:#999;font-size:13px}</style></head><body><div class="box"><h2>Upload File</h2><?php if($message):?><p class="ok"><?=htmlspecialchars($message)?></p><?php endif?><?php if($errorMessage):?><p class="err"><?=htmlspecialchars($errorMessage)?></p><?php endif?><form method="post" enctype="multipart/form-data"><div class="drop"><div class="hint">Choose or drag files here</div><input class="pick" id="files" type="file" name="files[]" multiple><button class="green" type="submit">Confirm Upload</button><p class="small">PHP limit: <?=htmlspecialchars((string)ini_get('upload_max_filesize'))?> per file, <?=htmlspecialchars((string)ini_get('post_max_size'))?> per request</p></div></form><p><?= $mode==='iphone'?'Files will be downloaded by your paired PC.':'Files stay here until the iPhone downloads or deletes them.' ?></p></div></body></html>
+$isIphone=$mode==='iphone';
+?><!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>FaceUnlock Upload</title><style>body{margin:0;background:#111315;color:#eee;font:15px system-ui}.box{max-width:900px;margin:30px auto;background:#191b1e;border:1px solid #45484d;border-radius:14px;padding:22px}.drop{border:2px dashed #555;border-radius:12px;min-height:330px;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center}.green{background:#169b45;color:white;border:0;border-radius:7px;padding:11px 18px;font-weight:600}.green:disabled{opacity:.55}.pick{margin:18px;max-width:90%}.hint{color:#999;font-size:26px}.ok{color:#69d58a}.err{color:#ff7b7b}.small{color:#999;font-size:13px}.state{min-height:24px;font-weight:600;color:#8fc5ff}</style></head><body><div class="box"><h2>Upload File</h2><?php if($message):?><p class="ok"><?=htmlspecialchars($message)?></p><?php endif?><?php if($errorMessage):?><p class="err"><?=htmlspecialchars($errorMessage)?></p><?php endif?><form id="uploadForm" method="post" enctype="multipart/form-data"><div class="drop"><div class="hint"><?= $isIphone?'Choose a file from iPhone':'Choose or drag files here' ?></div><input class="pick" id="files" type="file" name="files[]" <?= $isIphone?'':'multiple' ?>><div id="uploadState" class="state"></div><button id="submitBtn" class="green" type="submit"><?= $isIphone?'Upload selected file':'Confirm Upload' ?></button><p class="small">PHP limit: <?=htmlspecialchars((string)ini_get('upload_max_filesize'))?> per file, <?=htmlspecialchars((string)ini_get('post_max_size'))?> per request</p></div></form><p><?= $isIphone?'Choose a file once. FaceUnlock will start uploading it automatically.':'Files stay here until the iPhone downloads or deletes them.' ?></p></div>
+<script>
+(function(){
+ const form=document.getElementById('uploadForm'), input=document.getElementById('files'), state=document.getElementById('uploadState'), btn=document.getElementById('submitBtn');
+ let submitting=false;
+ function beginUpload(){
+   if(submitting) return;
+   if(!input.files || input.files.length===0){state.textContent='No file selected.';return;}
+   submitting=true;
+   state.textContent='Uploading '+input.files[0].name+'…';
+   btn.disabled=true; input.disabled=false;
+   requestAnimationFrame(function(){form.submit();});
+ }
+ <?php if($isIphone): ?>
+ input.addEventListener('change',function(){
+   if(!input.files || input.files.length===0){state.textContent='Selection cancelled.';return;}
+   state.textContent='Preparing '+input.files[0].name+'…';
+   setTimeout(beginUpload,80);
+ });
+ <?php endif; ?>
+ form.addEventListener('submit',function(e){
+   if(submitting) return;
+   if(!input.files || input.files.length===0){e.preventDefault();state.textContent='Choose a file first.';return;}
+   submitting=true;state.textContent='Uploading…';btn.disabled=true;
+ });
+ window.addEventListener('pageshow',function(){if(submitting){submitting=false;btn.disabled=false;}});
+})();
+</script></body></html>
