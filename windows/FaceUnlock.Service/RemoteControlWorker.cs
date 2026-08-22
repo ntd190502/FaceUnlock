@@ -94,9 +94,36 @@ public sealed class RemoteControlWorker : BackgroundService
 
     static object ReadStatus()
     {
-        double cpu=0;try{using var s=new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_Processor");var v=s.Get().Cast<ManagementObject>().Select(x=>Convert.ToDouble(x["LoadPercentage"])).ToArray();if(v.Length>0)cpu=v.Average();}catch{}
-        return new { cpu_percent=Math.Round(cpu,1), ram_percent=Math.Round(RamPercent(),1), temperature_c=CpuTemperature() };
+        return new { cpu_percent=Math.Round(TotalCpuPercent(),1), ram_percent=Math.Round(RamPercent(),1), temperature_c=CpuTemperature() };
     }
+
+    static double TotalCpuPercent()
+    {
+        // Prefer the Windows performance counter provider's _Total row. This is total CPU usage
+        // across all logical processors, matching Task Manager much more closely than Win32_Processor.LoadPercentage.
+        try
+        {
+            using var s=new ManagementObjectSearcher("SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'");
+            var row=s.Get().Cast<ManagementObject>().FirstOrDefault();
+            if(row?["PercentProcessorTime"] is not null)
+            {
+                var value=Convert.ToDouble(row["PercentProcessorTime"]);
+                if(value>=0&&value<=100)return value;
+            }
+        }
+        catch { }
+
+        // Fallback for systems where the formatted performance provider is unavailable.
+        try
+        {
+            using var s=new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_Processor");
+            var values=s.Get().Cast<ManagementObject>().Select(x=>Convert.ToDouble(x["LoadPercentage"])).ToArray();
+            if(values.Length>0)return Math.Clamp(values.Average(),0,100);
+        }
+        catch { }
+        return 0;
+    }
+
     static double RamPercent(){try{using var s=new ManagementObjectSearcher("SELECT TotalVisibleMemorySize,FreePhysicalMemory FROM Win32_OperatingSystem");var r=s.Get().Cast<ManagementObject>().First();var t=Convert.ToDouble(r["TotalVisibleMemorySize"]);var f=Convert.ToDouble(r["FreePhysicalMemory"]);return t>0?(t-f)*100/t:0;}catch{return 0;}}
     static double? CpuTemperature(){try{using var s=new ManagementObjectSearcher(@"root\WMI","SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");var v=s.Get().Cast<ManagementObject>().Select(x=>(Convert.ToDouble(x["CurrentTemperature"])/10)-273.15).Where(x=>x>0&&x<150).ToArray();return v.Length>0?Math.Round(v.Max(),1):null;}catch{return null;}}
     static object Power(string args){Process.Start(new ProcessStartInfo("shutdown.exe",args){UseShellExecute=false,CreateNoWindow=true});return new{accepted=true};}
