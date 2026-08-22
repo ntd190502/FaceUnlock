@@ -23,7 +23,7 @@ struct PCControlView: View {
             Section(header:Text("Files")){
                 Button("Send file iPhone → PC"){safariURL=APIClient.shared.uploadWebURL(pcID:pc.id)}
                 Button("Refresh PC → iPhone files"){refreshFiles()}
-                ForEach(files){file in HStack{VStack(alignment:.leading){Text(file.name);Text(ByteCountFormatter.string(fromByteCount:file.size,countStyle:.file)).font(.caption).foregroundColor(.secondary)};Spacer();Button("Download"){download(file)}.buttonStyle(.borderless);Button("Delete",role:.destructive){delete(file)}.buttonStyle(.borderless)}}
+                ForEach(files){file in HStack{VStack(alignment:.leading){Text(file.name);Text(ByteCountFormatter.string(fromByteCount:file.size,countStyle:.file)).font(.caption).foregroundColor(.secondary)};Spacer();Button("Download"){download(file)}.buttonStyle(BorderlessButtonStyle());Button("Delete"){delete(file)}.foregroundColor(.red).buttonStyle(BorderlessButtonStyle())}}
                 Text("iPhone → PC opens the FaceUnlock web uploader. PC → iPhone files are uploaded from the PC web page and remain on Hosting until downloaded or deleted.").font(.caption).foregroundColor(.secondary)
             }
             Section(header:Text("Status")){Text(status)}
@@ -36,8 +36,6 @@ struct PCControlView: View {
     private func delete(_ file:HostedFile){Task{@MainActor in do{try await APIClient.shared.deleteHostedFile(file.id);files.removeAll{$0.id==file.id};status="Deleted \(file.name)"}catch{status=error.localizedDescription}}}
     private func download(_ file:HostedFile){Task{@MainActor in do{let u=try await APIClient.shared.downloadHostedFile(file);files.removeAll{$0.id==file.id};shareURL=u;status="Downloaded \(file.name)"}catch{status=error.localizedDescription}}}
 }
-
 struct SafariView:UIViewControllerRepresentable{let url:URL;func makeUIViewController(context:Context)->SFSafariViewController{SFSafariViewController(url:url)};func updateUIViewController(_ uiViewController:SFSafariViewController,context:Context){}}
 struct ShareSheet:UIViewControllerRepresentable{let items:[Any];func makeUIViewController(context:Context)->UIActivityViewController{UIActivityViewController(activityItems:items,applicationActivities:nil)};func updateUIViewController(_ uiViewController:UIActivityViewController,context:Context){}}
-
 extension URL: @retroactive Identifiable { public var id:String{absoluteString} }
