@@ -1,5 +1,4 @@
 import SwiftUI
-import SafariServices
 import UIKit
 
 struct PCControlView: View {
@@ -7,9 +6,7 @@ struct PCControlView: View {
     @State private var status="Ready"
     @State private var cpu:Double?;@State private var ram:Double?;@State private var temp:Double?
     @State private var files:[HostedFile]=[]
-    @State private var safariURL:URL?
     @State private var shareURL:URL?
-    @State private var showSafari=false
     @State private var showShare=false
     @State private var downloadingID:String?
 
@@ -28,8 +25,7 @@ struct PCControlView: View {
             }
             Section(header:Text("Files")){
                 Button("Send file iPhone → PC"){
-                    if let url=APIClient.shared.uploadWebURL(pcID:pc.id){safariURL=url;showSafari=true;status="Opening upload page…"}
-                    else{status="Cannot open upload page: device token is missing"}
+                    openUploadPage()
                 }
                 Button("Refresh PC → iPhone files"){refreshFiles()}
                 ForEach(files){file in
@@ -41,17 +37,27 @@ struct PCControlView: View {
                     }
                 }
                 if files.isEmpty{Text("No PC → iPhone files currently on Hosting.").font(.caption).foregroundColor(.secondary)}
-                Text("iPhone → PC opens the hosted uploader with the normal iOS file/photo chooser. PC → iPhone files remain on Hosting until downloaded or deleted.").font(.caption).foregroundColor(.secondary)
+                Text("iPhone → PC opens the FaceUnlock uploader in your normal web browser so iOS handles file/photo selection directly. PC → iPhone files remain on Hosting until downloaded or deleted.").font(.caption).foregroundColor(.secondary)
             }
             Section(header:Text("Status")){Text(status)}
         }
         .navigationTitle(pc.name)
         .onAppear{refreshFiles()}
-        .sheet(isPresented:$showSafari,onDismiss:{safariURL=nil;status="Upload page closed"}){
-            if let safariURL{SafariView(url:safariURL)}else{Text("Upload URL unavailable")}
-        }
         .sheet(isPresented:$showShare,onDismiss:{shareURL=nil}){
             if let shareURL{ShareSheet(items:[shareURL])}else{Text("Downloaded file unavailable")}
+        }
+    }
+
+    private func openUploadPage(){
+        guard let url=APIClient.shared.uploadWebURL(pcID:pc.id) else {
+            status="Cannot open upload page: device token is missing"
+            return
+        }
+        status="Opening upload website…"
+        UIApplication.shared.open(url,options:[:]){opened in
+            DispatchQueue.main.async{
+                status = opened ? "Upload website opened in browser" : "Could not open upload website"
+            }
         }
     }
 
@@ -74,12 +80,6 @@ struct PCControlView: View {
             }catch{status="Download failed: \(error.localizedDescription)"}
         }
     }
-}
-
-struct SafariView:UIViewControllerRepresentable{
-    let url:URL
-    func makeUIViewController(context:Context)->SFSafariViewController{SFSafariViewController(url:url)}
-    func updateUIViewController(_ uiViewController:SFSafariViewController,context:Context){}
 }
 
 struct ShareSheet:UIViewControllerRepresentable{
