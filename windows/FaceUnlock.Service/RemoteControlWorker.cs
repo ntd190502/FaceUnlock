@@ -10,129 +10,125 @@ public sealed class RemoteControlWorker : BackgroundService
 {
     readonly ILogger<RemoteControlWorker> _log;
     readonly ConfigStore _store = new();
-    DateTime _lastTempAlert = DateTime.MinValue;
-    DateTime _lastRamAlert = DateTime.MinValue;
+    DateTime _lastTempAlert = DateTime.MinValue, _lastRamAlert = DateTime.MinValue, _lastCpuAlert = DateTime.MinValue;
+    DateTime? _cpuHighSince;
+    int _serverFailures;
+    bool _serverAlerted;
+    static readonly string AlertPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "Bridge", "alert.json");
 
     public RemoteControlWorker(ILogger<RemoteControlWorker> log) => _log = log;
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
+        // Remote commands, hosted files and monitoring run independently so a slow file request
+        // can never hold up Sign out / Restart / Shutdown / Status.
+        await Task.WhenAll(RemoteLoop(stop), FileLoop(stop), MonitorLoop(stop));
+    }
+
+    async Task RemoteLoop(CancellationToken stop)
+    {
         while (!stop.IsCancellationRequested)
         {
             try
             {
-                var cfg = _store.Load();
-                if (!string.IsNullOrWhiteSpace(cfg.PcToken))
+                var cfg=_store.Load();
+                if(!string.IsNullOrWhiteSpace(cfg.PcToken))
                 {
-                    await CheckAlerts(cfg, stop);
-                    var api = new ApiClient(cfg);
-                    await ReceiveHostedFile(api, stop);
-                    var pending = await api.GetRemoteCommandAsync(stop);
-                    if (pending.pending && pending.command != null)
-                    {
-                        _log.LogInformation("[REMOTE CLAIM] id={CommandId} type={CommandType}", pending.command.id, pending.command.type);
-                        await Handle(api, pending.command, stop);
-                    }
+                    var api=new ApiClient(cfg);
+                    var pending=await api.GetRemoteCommandAsync(stop);
+                    ServerOk();
+                    if(pending.pending&&pending.command!=null) await Handle(api,pending.command,stop);
                 }
             }
-            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
-            catch (Exception ex) { _log.LogWarning(ex, "[REMOTE POLL FAILED] {Message}", ex.Message); }
-            await Task.Delay(3000, stop);
+            catch(OperationCanceledException) when(stop.IsCancellationRequested){break;}
+            catch(Exception ex){ServerFailed(ex);}
+            await Task.Delay(400,stop);
         }
     }
 
-    async Task Handle(ApiClient api, RemoteCommand command, CancellationToken ct)
+    async Task FileLoop(CancellationToken stop)
     {
-        try
+        while(!stop.IsCancellationRequested)
         {
-            object result = command.type switch
+            try
             {
-                "status" => ReadStatus(),
-                "signout" => Power("/l"),
-                "restart" => Power("/r /t 1"),
-                "shutdown" => Power("/s /t 1"),
-                _ => throw new InvalidOperationException("Unsupported command")
-            };
-            await api.CompleteRemoteCommandAsync(command.id, "DONE", result, ct);
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "[REMOTE EXECUTE FAILED] id={CommandId} type={CommandType}", command.id, command.type);
-            try { await api.CompleteRemoteCommandAsync(command.id, "ERROR", new { error = ex.Message }, ct); } catch { }
-        }
-    }
-
-    async Task ReceiveHostedFile(ApiClient api, CancellationToken ct)
-    {
-        var pending = await api.GetPendingHostedFileAsync(ct);
-        if (!pending.pending || pending.file == null) return;
-        var root = UserDownloadsFaceUnlock(); Directory.CreateDirectory(root);
-        var name = Path.GetFileName(pending.file.name); var path = UniquePath(root, name);
-        await api.DownloadHostedFileAsync(pending.file, path, ct);
-        _log.LogInformation("[HOSTED FILE RECEIVED] id={Id} path={Path}", pending.file.id, path);
-    }
-
-    static string UserDownloadsFaceUnlock()
-    {
-        try
-        {
-            using var s = new ManagementObjectSearcher("SELECT UserName FROM Win32_ComputerSystem");
-            var user = s.Get().Cast<ManagementObject>().Select(x => x["UserName"]?.ToString()).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
-            var shortName = user?.Split('\\').LastOrDefault();
-            if (!string.IsNullOrWhiteSpace(shortName)) return Path.Combine("C:\\Users", shortName, "Downloads", "FaceUnlock");
-        }
-        catch { }
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FaceUnlock", "Incoming");
-    }
-
-    static string UniquePath(string dir, string name)
-    {
-        var path=Path.Combine(dir,name); if(!File.Exists(path)) return path;
-        var stem=Path.GetFileNameWithoutExtension(name);var ext=Path.GetExtension(name);
-        for(var i=1;;i++){path=Path.Combine(dir,$"{stem} ({i}){ext}");if(!File.Exists(path))return path;}
-    }
-
-    static object ReadStatus()
-    {
-        return new { cpu_percent=Math.Round(TotalCpuPercent(),1), ram_percent=Math.Round(RamPercent(),1), temperature_c=CpuTemperature() };
-    }
-
-    static double TotalCpuPercent()
-    {
-        // Prefer the Windows performance counter provider's _Total row. This is total CPU usage
-        // across all logical processors, matching Task Manager much more closely than Win32_Processor.LoadPercentage.
-        try
-        {
-            using var s=new ManagementObjectSearcher("SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'");
-            var row=s.Get().Cast<ManagementObject>().FirstOrDefault();
-            if(row?["PercentProcessorTime"] is not null)
-            {
-                var value=Convert.ToDouble(row["PercentProcessorTime"]);
-                if(value>=0&&value<=100)return value;
+                var cfg=_store.Load();
+                if(!string.IsNullOrWhiteSpace(cfg.PcToken)) await ReceiveHostedFile(new ApiClient(cfg),stop);
             }
+            catch(OperationCanceledException) when(stop.IsCancellationRequested){break;}
+            catch(Exception ex){_log.LogWarning(ex,"[HOSTED FILE FAILED] {Message}",ex.Message);WriteAlert("file","File transfer failed",ex.Message);}
+            await Task.Delay(2500,stop);
         }
-        catch { }
-
-        // Fallback for systems where the formatted performance provider is unavailable.
-        try
-        {
-            using var s=new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_Processor");
-            var values=s.Get().Cast<ManagementObject>().Select(x=>Convert.ToDouble(x["LoadPercentage"])).ToArray();
-            if(values.Length>0)return Math.Clamp(values.Average(),0,100);
-        }
-        catch { }
-        return 0;
     }
 
+    async Task MonitorLoop(CancellationToken stop)
+    {
+        while(!stop.IsCancellationRequested)
+        {
+            try{await CheckAlerts(_store.Load(),stop);}catch(OperationCanceledException) when(stop.IsCancellationRequested){break;}catch(Exception ex){_log.LogWarning(ex,"[MONITOR FAILED] {Message}",ex.Message);}
+            await Task.Delay(2000,stop);
+        }
+    }
+
+    async Task Handle(ApiClient api,RemoteCommand command,CancellationToken ct)
+    {
+        try
+        {
+            object result;
+            if(command.type=="status")
+            {
+                // Let the short request/WMI burst settle before sampling total CPU.
+                await Task.Delay(1000,ct);
+                result=ReadStatus();
+            }
+            else result=command.type switch
+            {
+                "signout"=>Power("/l"),
+                "restart"=>Power("/r /t 1"),
+                "shutdown"=>Power("/s /t 1"),
+                _=>throw new InvalidOperationException("Unsupported command")
+            };
+            await api.CompleteRemoteCommandAsync(command.id,"DONE",result,ct);
+        }
+        catch(Exception ex)
+        {
+            _log.LogError(ex,"[REMOTE EXECUTE FAILED] id={CommandId} type={CommandType}",command.id,command.type);
+            try{await api.CompleteRemoteCommandAsync(command.id,"ERROR",new{error=ex.Message},ct);}catch{}
+        }
+    }
+
+    async Task ReceiveHostedFile(ApiClient api,CancellationToken ct)
+    {
+        var pending=await api.GetPendingHostedFileAsync(ct);if(!pending.pending||pending.file==null)return;
+        var root=UserDownloadsFaceUnlock();Directory.CreateDirectory(root);var name=Path.GetFileName(pending.file.name);var path=UniquePath(root,name);
+        await api.DownloadHostedFileAsync(pending.file,path,ct);_log.LogInformation("[HOSTED FILE RECEIVED] id={Id} path={Path}",pending.file.id,path);
+    }
+
+    static string UserDownloadsFaceUnlock(){try{using var s=new ManagementObjectSearcher("SELECT UserName FROM Win32_ComputerSystem");var user=s.Get().Cast<ManagementObject>().Select(x=>x["UserName"]?.ToString()).FirstOrDefault(x=>!string.IsNullOrWhiteSpace(x));var shortName=user?.Split('\\').LastOrDefault();if(!string.IsNullOrWhiteSpace(shortName))return Path.Combine("C:\\Users",shortName,"Downloads","FaceUnlock");}catch{}return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"FaceUnlock","Incoming");}
+    static string UniquePath(string dir,string name){var path=Path.Combine(dir,name);if(!File.Exists(path))return path;var stem=Path.GetFileNameWithoutExtension(name);var ext=Path.GetExtension(name);for(var i=1;;i++){path=Path.Combine(dir,$"{stem} ({i}){ext}");if(!File.Exists(path))return path;}}
+
+    static object ReadStatus()=>new{cpu_percent=Math.Round(TotalCpuPercent(),1),ram_percent=Math.Round(RamPercent(),1),temperature_c=CpuTemperature()};
+
+    // Single CPU engine used by PC Status and alerts: _Total is the aggregate across all logical processors.
+    static double TotalCpuPercent(){try{using var s=new ManagementObjectSearcher("SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'");var row=s.Get().Cast<ManagementObject>().FirstOrDefault();if(row?["PercentProcessorTime"] is not null){var value=Convert.ToDouble(row["PercentProcessorTime"]);if(value>=0&&value<=100)return value;}}catch{}try{using var s=new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_Processor");var values=s.Get().Cast<ManagementObject>().Select(x=>Convert.ToDouble(x["LoadPercentage"])).ToArray();if(values.Length>0)return Math.Clamp(values.Average(),0,100);}catch{}return 0;}
     static double RamPercent(){try{using var s=new ManagementObjectSearcher("SELECT TotalVisibleMemorySize,FreePhysicalMemory FROM Win32_OperatingSystem");var r=s.Get().Cast<ManagementObject>().First();var t=Convert.ToDouble(r["TotalVisibleMemorySize"]);var f=Convert.ToDouble(r["FreePhysicalMemory"]);return t>0?(t-f)*100/t:0;}catch{return 0;}}
     static double? CpuTemperature(){try{using var s=new ManagementObjectSearcher(@"root\WMI","SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");var v=s.Get().Cast<ManagementObject>().Select(x=>(Convert.ToDouble(x["CurrentTemperature"])/10)-273.15).Where(x=>x>0&&x<150).ToArray();return v.Length>0?Math.Round(v.Max(),1):null;}catch{return null;}}
     static object Power(string args){Process.Start(new ProcessStartInfo("shutdown.exe",args){UseShellExecute=false,CreateNoWindow=true});return new{accepted=true};}
 
     async Task CheckAlerts(LocalConfig c,CancellationToken ct)
     {
-        var now=DateTime.UtcNow;var ram=RamPercent();var temp=CpuTemperature();
-        if(c.RamAlertEnabled&&ram>=c.RamAlertPercent&&(now-_lastRamAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastRamAlert=now;await Telegram(c,$"⚠️ FaceUnlock RAM alert\nPC: {c.PcName}\nRAM: {ram:F1}% (limit {c.RamAlertPercent:F0}%)",ct);}
-        if(c.TemperatureAlertEnabled&&temp.HasValue&&temp.Value>=c.TemperatureAlertCelsius&&(now-_lastTempAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastTempAlert=now;await Telegram(c,$"🔥 FaceUnlock temperature alert\nPC: {c.PcName}\nCPU: {temp:F1}°C (limit {c.TemperatureAlertCelsius:F0}°C)",ct);}
+        var now=DateTime.UtcNow;var cpu=TotalCpuPercent();var ram=RamPercent();var temp=CpuTemperature();
+        if(c.TemperatureAlertEnabled&&temp.HasValue&&temp.Value>=c.TemperatureAlertCelsius&&(now-_lastTempAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastTempAlert=now;var m=$"CPU temperature {temp:F1}°C (limit {c.TemperatureAlertCelsius:F0}°C)";WriteAlert("temperature","CPU temperature is too high",m);await Telegram(c,$"🔥 FaceUnlock temperature alert\nPC: {c.PcName}\n{m}",ct);}
+        if(c.RamAlertEnabled&&ram>=c.RamAlertPercent&&(now-_lastRamAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastRamAlert=now;var m=$"RAM {ram:F1}% (limit {c.RamAlertPercent:F0}%)";WriteAlert("ram","RAM usage is too high",m);await Telegram(c,$"⚠️ FaceUnlock RAM alert\nPC: {c.PcName}\n{m}",ct);}
+        if(c.CpuLoadAlertEnabled&&cpu>=c.CpuLoadAlertPercent){_cpuHighSince??=now;if((now-_cpuHighSince.Value).TotalSeconds>=c.CpuLoadAlertDurationSeconds&&(now-_lastCpuAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastCpuAlert=now;var m=$"Total CPU {cpu:F1}% (limit {c.CpuLoadAlertPercent:F0}%, sustained {c.CpuLoadAlertDurationSeconds}s)";WriteAlert("cpu","Total CPU load is too high",m);await Telegram(c,$"⚙️ FaceUnlock CPU alert\nPC: {c.PcName}\n{m}",ct);}}else if(cpu<=Math.Max(0,c.CpuLoadAlertPercent-5))_cpuHighSince=null;
+    }
+
+    void ServerFailed(Exception ex){_serverFailures++;_log.LogWarning(ex,"[REMOTE POLL FAILED] {Message}",ex.Message);if(_serverFailures>=15&&!_serverAlerted){_serverAlerted=true;WriteAlert("server","FaceUnlock Server connection lost","Remote control has failed repeatedly. FaceUnlock will keep retrying automatically.");}}
+    void ServerOk(){_serverFailures=0;_serverAlerted=false;}
+
+    static void WriteAlert(string key,string title,string message)
+    {
+        try{Directory.CreateDirectory(Path.GetDirectoryName(AlertPath)!);var tmp=AlertPath+".tmp";File.WriteAllText(tmp,JsonSerializer.Serialize(new{key,title,message,created_at=DateTimeOffset.UtcNow.ToUnixTimeSeconds()}));File.Move(tmp,AlertPath,true);}catch{}
     }
     static async Task Telegram(LocalConfig c,string text,CancellationToken ct){if(string.IsNullOrWhiteSpace(c.TelegramBotToken)||string.IsNullOrWhiteSpace(c.TelegramChatId))return;using var client=new HttpClient();await client.PostAsJsonAsync($"https://api.telegram.org/bot{c.TelegramBotToken}/sendMessage",new{chat_id=c.TelegramChatId,text},ct);}
 }
