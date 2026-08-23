@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>FaceUnlock.AlertUI</AssemblyName>
+    <RootNamespace>FaceUnlock.AlertUI</RootNamespace>
+  </PropertyGroup>
+</Project>
