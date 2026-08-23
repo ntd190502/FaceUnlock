@@ -41,7 +41,7 @@ jobs:
       - name: Verify architecture contract
         shell: pwsh
         run: |
-          $service = Get-Content windows/FaceUnlock.Service/RemoteControlWorker.cs,windows/FaceUnlock.Service/UserSessionProcess.cs -Raw
+          $service = (Get-Content windows/FaceUnlock.Service/RemoteControlWorker.cs -Raw) + "`n" + (Get-Content windows/FaceUnlock.Service/UserSessionProcess.cs -Raw)
           $agent = Get-Content windows/FaceUnlock.Agent/App.xaml.cs -Raw
           if ($service -notmatch 'FaceUnlock.AlertUI.exe') { throw 'Service does not launch standalone AlertUI' }
           if ($service -notmatch 'WTSQueryUserToken') { throw 'Service does not target the interactive user session' }
