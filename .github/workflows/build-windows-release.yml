@@ -34,6 +34,17 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o windows/dist/publish-agent
 
+      - name: Publish FaceUnlock.AlertUI x64
+        shell: pwsh
+        run: |
+          dotnet publish windows/FaceUnlock.AlertUI/FaceUnlock.AlertUI.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o windows/dist/publish-alertui
+
       - name: Publish FaceUnlock.Service x64
         shell: pwsh
         run: |
@@ -61,6 +72,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path windows/installer/bin -Force
           Copy-Item windows/dist/publish-agent/FaceUnlock.Agent.exe windows/installer/bin/
+          Copy-Item windows/dist/publish-alertui/FaceUnlock.AlertUI.exe windows/installer/bin/
           Copy-Item windows/dist/publish-service/FaceUnlock.Service.exe windows/installer/bin/
           Copy-Item windows/dist/publish-shell/FaceUnlockShell.exe windows/installer/bin/
           Copy-Item windows/dist/publish-agent/FaceUnlock.Core.dll windows/installer/bin/ -ErrorAction SilentlyContinue
@@ -71,7 +83,7 @@ jobs:
           Copy-Item windows/scripts/Cleanup-PhaseE.ps1 windows/installer/bin/
           Copy-Item windows/scripts/Setup-Ready.ps1 windows/installer/bin/
 
-          $required = @('FaceUnlock.Agent.exe','FaceUnlock.Service.exe','FaceUnlockShell.exe','Setup-Ready.ps1','Enable-ShellGate.ps1','Disable-ShellGate.ps1','Check-ShellGate.ps1','Cleanup-PhaseE.ps1')
+          $required = @('FaceUnlock.Agent.exe','FaceUnlock.AlertUI.exe','FaceUnlock.Service.exe','FaceUnlockShell.exe','Setup-Ready.ps1','Enable-ShellGate.ps1','Disable-ShellGate.ps1','Check-ShellGate.ps1','Cleanup-PhaseE.ps1')
           foreach ($name in $required) {
             if (-not (Test-Path (Join-Path windows/installer/bin $name))) { throw "Missing current installer file: $name" }
           }

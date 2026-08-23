@@ -1,0 +1,49 @@
+name: AlertUI On-Demand CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  alertui:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore AlertUI and Service
+        run: |
+          dotnet restore windows/FaceUnlock.AlertUI/FaceUnlock.AlertUI.csproj
+          dotnet restore windows/FaceUnlock.Service/FaceUnlock.Service.csproj
+
+      - name: Build AlertUI
+        run: dotnet build windows/FaceUnlock.AlertUI/FaceUnlock.AlertUI.csproj -c Release --no-restore
+
+      - name: Build Service
+        run: dotnet build windows/FaceUnlock.Service/FaceUnlock.Service.csproj -c Release --no-restore
+
+      - name: Publish on-demand helper
+        shell: pwsh
+        run: |
+          dotnet publish windows/FaceUnlock.AlertUI/FaceUnlock.AlertUI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $env:RUNNER_TEMP/alertui
+          if (-not (Test-Path "$env:RUNNER_TEMP/alertui/FaceUnlock.AlertUI.exe")) { throw 'FaceUnlock.AlertUI.exe missing after publish' }
+
+      - name: Verify architecture contract
+        shell: pwsh
+        run: |
+          $service = (Get-Content windows/FaceUnlock.Service/RemoteControlWorker.cs -Raw) + "`n" + (Get-Content windows/FaceUnlock.Service/UserSessionProcess.cs -Raw)
+          $agent = Get-Content windows/FaceUnlock.Agent/App.xaml.cs -Raw
+          if ($service -notmatch 'FaceUnlock.AlertUI.exe') { throw 'Service does not launch standalone AlertUI' }
+          if ($service -notmatch 'WTSQueryUserToken') { throw 'Service does not target the interactive user session' }
+          if ($agent -match 'AlertWindow|alert.json') { throw 'Agent still owns AlertUI presentation' }
+          if (-not (Test-Path windows/FaceUnlock.AlertUI/AlertWindow.xaml)) { throw 'Standalone AlertUI window missing' }

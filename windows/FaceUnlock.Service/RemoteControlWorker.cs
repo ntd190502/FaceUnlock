@@ -20,8 +20,6 @@ public sealed class RemoteControlWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
-        // Remote commands, hosted files and monitoring run independently so a slow file request
-        // can never hold up Sign out / Restart / Shutdown / Status.
         await Task.WhenAll(RemoteLoop(stop), FileLoop(stop), MonitorLoop(stop));
     }
 
@@ -77,7 +75,6 @@ public sealed class RemoteControlWorker : BackgroundService
             object result;
             if(command.type=="status")
             {
-                // Let the short request/WMI burst settle before sampling total CPU.
                 await Task.Delay(1000,ct);
                 result=ReadStatus();
             }
@@ -108,8 +105,6 @@ public sealed class RemoteControlWorker : BackgroundService
     static string UniquePath(string dir,string name){var path=Path.Combine(dir,name);if(!File.Exists(path))return path;var stem=Path.GetFileNameWithoutExtension(name);var ext=Path.GetExtension(name);for(var i=1;;i++){path=Path.Combine(dir,$"{stem} ({i}){ext}");if(!File.Exists(path))return path;}}
 
     static object ReadStatus()=>new{cpu_percent=Math.Round(TotalCpuPercent(),1),ram_percent=Math.Round(RamPercent(),1),temperature_c=CpuTemperature()};
-
-    // Single CPU engine used by PC Status and alerts: _Total is the aggregate across all logical processors.
     static double TotalCpuPercent(){try{using var s=new ManagementObjectSearcher("SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'");var row=s.Get().Cast<ManagementObject>().FirstOrDefault();if(row?["PercentProcessorTime"] is not null){var value=Convert.ToDouble(row["PercentProcessorTime"]);if(value>=0&&value<=100)return value;}}catch{}try{using var s=new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_Processor");var values=s.Get().Cast<ManagementObject>().Select(x=>Convert.ToDouble(x["LoadPercentage"])).ToArray();if(values.Length>0)return Math.Clamp(values.Average(),0,100);}catch{}return 0;}
     static double RamPercent(){try{using var s=new ManagementObjectSearcher("SELECT TotalVisibleMemorySize,FreePhysicalMemory FROM Win32_OperatingSystem");var r=s.Get().Cast<ManagementObject>().First();var t=Convert.ToDouble(r["TotalVisibleMemorySize"]);var f=Convert.ToDouble(r["FreePhysicalMemory"]);return t>0?(t-f)*100/t:0;}catch{return 0;}}
     static double? CpuTemperature(){try{using var s=new ManagementObjectSearcher(@"root\WMI","SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");var v=s.Get().Cast<ManagementObject>().Select(x=>(Convert.ToDouble(x["CurrentTemperature"])/10)-273.15).Where(x=>x>0&&x<150).ToArray();return v.Length>0?Math.Round(v.Max(),1):null;}catch{return null;}}
@@ -126,9 +121,19 @@ public sealed class RemoteControlWorker : BackgroundService
     void ServerFailed(Exception ex){_serverFailures++;_log.LogWarning(ex,"[REMOTE POLL FAILED] {Message}",ex.Message);if(_serverFailures>=15&&!_serverAlerted){_serverAlerted=true;WriteAlert("server","FaceUnlock Server connection lost","Remote control has failed repeatedly. FaceUnlock will keep retrying automatically.");}}
     void ServerOk(){_serverFailures=0;_serverAlerted=false;}
 
-    static void WriteAlert(string key,string title,string message)
+    void WriteAlert(string key,string title,string message)
     {
-        try{Directory.CreateDirectory(Path.GetDirectoryName(AlertPath)!);var tmp=AlertPath+".tmp";File.WriteAllText(tmp,JsonSerializer.Serialize(new{key,title,message,created_at=DateTimeOffset.UtcNow.ToUnixTimeSeconds()}));File.Move(tmp,AlertPath,true);}catch{}
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(AlertPath)!);
+            var tmp=AlertPath+".tmp";
+            File.WriteAllText(tmp,JsonSerializer.Serialize(new{key,title,message,created_at=DateTimeOffset.UtcNow.ToUnixTimeSeconds()}));
+            File.Move(tmp,AlertPath,true);
+            var exe=Path.Combine(AppContext.BaseDirectory,"FaceUnlock.AlertUI.exe");
+            if(UserSessionProcess.StartInActiveSession(exe,out var error)) _log.LogInformation("[ALERT UI] requested key={Key}",key);
+            else _log.LogWarning("[ALERT UI] could not start key={Key}: {Error}",key,error);
+        }
+        catch(Exception ex){_log.LogWarning(ex,"[ALERT UI] request failed key={Key}",key);}
     }
     static async Task Telegram(LocalConfig c,string text,CancellationToken ct){if(string.IsNullOrWhiteSpace(c.TelegramBotToken)||string.IsNullOrWhiteSpace(c.TelegramChatId))return;using var client=new HttpClient();await client.PostAsJsonAsync($"https://api.telegram.org/bot{c.TelegramBotToken}/sendMessage",new{chat_id=c.TelegramChatId,text},ct);}
 }
