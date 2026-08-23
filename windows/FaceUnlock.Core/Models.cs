@@ -23,6 +23,8 @@ public static class LocalAuthStatus { public const string Ok="ok",Pending="pendi
 public sealed class LocalConfig {
  public string ServerUrl { get; set; }="https://face.bobabliss.io.vn"; public string PcId { get; set; }=Guid.NewGuid().ToString("N"); public string PcName { get; set; }=Environment.MachineName;
  public string? PcToken { get; set; } public string? PairId { get; set; } public string? DeviceId { get; set; } public string? DevicePublicKeyPem { get; set; } public List<PairedDevice> Devices { get; set; }=new();
- public bool TemperatureAlertEnabled { get; set; }=true; public double TemperatureAlertCelsius { get; set; }=80; public bool RamAlertEnabled { get; set; }=true; public double RamAlertPercent { get; set; }=90;
+ public bool TemperatureAlertEnabled { get; set; }=true; public double TemperatureAlertCelsius { get; set; }=80;
+ public bool CpuLoadAlertEnabled { get; set; }=true; public double CpuLoadAlertPercent { get; set; }=90; public int CpuLoadAlertDurationSeconds { get; set; }=30;
+ public bool RamAlertEnabled { get; set; }=true; public double RamAlertPercent { get; set; }=90;
  public int AlertCooldownSeconds { get; set; }=300; public string? TelegramBotToken { get; set; } public string? TelegramChatId { get; set; }
 }
