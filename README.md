@@ -5,9 +5,18 @@ Biometric Face ID approval system for a Windows PC using an iPhone companion app
 ## What is included
 
 - `ios/`: Swift/SwiftUI companion app with Face ID, Secure Enclave-backed ECDSA P-256 signing, Keychain token storage, foreground pending-session polling, MTU-safe BLE framing, and QR pairing/fallback.
-- `windows/`: .NET 8 Agent/Service with explicit device selection/revocation, DPAPI token protection, online protocol, targeted BLE discovery/framing, QR generation, and status/log UI.
+- `windows/`: .NET 8 Windows components including Agent, SYSTEM Service, Post-Logon Shell Gate, and the standalone on-demand `FaceUnlock.AlertUI.exe`. The Windows side provides explicit device selection/revocation, DPAPI token protection, online protocol, targeted BLE discovery/framing, QR generation, status/log UI, and interactive alert presentation.
 - `hosting/`: PHP 8 + MySQL backend with plain Telegram HTTPS-link notifications, hashed one-time approval tokens, device-bound sessions, revocation, and server-side signature verification.
 - `docs/`: architecture, protocol, security model, deployment/build instructions, limitations, and regression test plan.
+
+## Windows components
+
+| Component | Role | Background behavior |
+| --- | --- | --- |
+| `FaceUnlock.Service.exe` | SYSTEM service; owns privileged/background control, approval state, Shell Gate enforcement, and alert dispatch | Runs as the Windows service |
+| `FaceUnlock.Agent.exe` | User-facing configuration, pairing, device selection, status and logs | User application; no longer owns warning popup presentation |
+| `FaceUnlockShell.exe` | Post-Logon Shell Gate before Explorer | Runs only while the session gate is active and exits after authorization |
+| `FaceUnlock.AlertUI.exe` | Standalone interactive warning popup | **Not kept running.** Launched only when a warning must be shown and exits when the popup is closed |
 
 ## Core flows
 
@@ -48,6 +57,25 @@ If FaceUnlock is already active, it polls `/v1/unlock/pending`. A new device-bou
 
 See `docs/PROTOCOL.md` for the framing format.
 
+### 4. On-demand Windows AlertUI
+
+Warning presentation is separated from `FaceUnlock.Agent.exe`.
+
+```text
+FaceUnlock.Service.exe (SYSTEM)
+    -> detects/receives a warning
+    -> writes the current alert payload
+    -> finds the active interactive Windows session
+    -> obtains the user token with WTS APIs
+    -> launches FaceUnlock.AlertUI.exe inside that user session
+FaceUnlock.AlertUI.exe
+    -> displays the warning on the user's desktop
+    -> can refresh an already-open warning when the payload changes
+    -> exits when the user closes the warning
+```
+
+This architecture intentionally does **not** keep an AlertUI helper running in the background. `FaceUnlock.Service.exe` remains responsible for background work and starts the UI only when interaction is required. The Agent is therefore no longer the owner of `AlertWindow`/alert popup presentation.
+
 ## FaceUnlock Architecture (Phase F: Post-Logon Shell Gate)
 
 FaceUnlock implements a **Post-Logon Windows Shell Gate** (`FaceUnlockShell.exe`):
@@ -71,7 +99,7 @@ FaceUnlock implements a **Post-Logon Windows Shell Gate** (`FaceUnlockShell.exe`
 
 1. Deploy `hosting/` and import `hosting/schema.sql`.
 2. Copy `hosting/config.example.php` to `hosting/config.php`; configure database and Telegram credentials.
-3. Build Windows managed projects with `windows/scripts/build.ps1` or `.NET 8` commands.
+3. Build Windows managed projects with `windows/scripts/build.ps1` or `.NET 8` commands. Windows release packaging includes `FaceUnlock.AlertUI.exe` alongside the other Windows components.
 4. Generate the iOS project with XcodeGen and build on a physical iPhone.
 5. Pair by scanning the Windows QR from `FaceUnlock.Agent.exe`.
 6. Test Shell Gate safely:
@@ -94,4 +122,5 @@ FaceUnlock implements a **Post-Logon Windows Shell Gate** (`FaceUnlockShell.exe`
 - Revoked devices cannot use device-authenticated server routes.
 - BLE transport itself is not trusted; cryptographic signatures remain authoritative.
 - Fail-closed design: Service unavailability, rejection, timeout, or missing grants never launch Explorer.
+- Interactive warnings are launched into the active user session on demand; `FaceUnlock.AlertUI.exe` is not a permanent background process.
 - Built-in emergency recovery script (`FaceUnlock-Shell-Recovery.ps1`) restores `explorer.exe` cleanly.
