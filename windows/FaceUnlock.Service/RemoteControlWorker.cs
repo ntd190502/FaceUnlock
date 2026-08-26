@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Management;
 using System.Net.Http.Json;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using FaceUnlock.Core;
 
@@ -118,8 +119,44 @@ public sealed class RemoteControlWorker : BackgroundService
         if(c.CpuLoadAlertEnabled&&cpu>=c.CpuLoadAlertPercent){_cpuHighSince??=now;if((now-_cpuHighSince.Value).TotalSeconds>=c.CpuLoadAlertDurationSeconds&&(now-_lastCpuAlert).TotalSeconds>=c.AlertCooldownSeconds){_lastCpuAlert=now;var m=$"Total CPU {cpu:F1}% (limit {c.CpuLoadAlertPercent:F0}%, sustained {c.CpuLoadAlertDurationSeconds}s)";WriteAlert("cpu","Total CPU load is too high",m);await Telegram(c,$"⚙️ FaceUnlock CPU alert\nPC: {c.PcName}\n{m}",ct);}}else if(cpu<=Math.Max(0,c.CpuLoadAlertPercent-5))_cpuHighSince=null;
     }
 
-    void ServerFailed(Exception ex){_serverFailures++;_log.LogWarning(ex,"[REMOTE POLL FAILED] {Message}",ex.Message);if(_serverFailures>=15&&!_serverAlerted){_serverAlerted=true;WriteAlert("server","FaceUnlock Server connection lost","Remote control has failed repeatedly. FaceUnlock will keep retrying automatically.");}}
+    void ServerFailed(Exception ex)
+    {
+        _serverFailures++;
+        _log.LogWarning(ex,"[REMOTE POLL FAILED] {Message}",ex.Message);
+        if(IsWorkstationLocked())
+        {
+            // A locked PC can legitimately lose Wi-Fi/network access. Connectivity
+            // alerts are intentionally suppressed until an interactive desktop is back.
+            _serverFailures=0;
+            _serverAlerted=false;
+            return;
+        }
+        if(_serverFailures>=15&&!_serverAlerted)
+        {
+            _serverAlerted=true;
+            WriteAlert("server","FaceUnlock Server connection lost","Remote control has failed repeatedly. FaceUnlock will keep retrying automatically.");
+        }
+    }
     void ServerOk(){_serverFailures=0;_serverAlerted=false;}
+
+    static bool IsWorkstationLocked()
+    {
+        try
+        {
+            var sessionId=WTSGetActiveConsoleSessionId();
+            if(sessionId==0xFFFFFFFF)return true;
+            IntPtr buffer=IntPtr.Zero;
+            uint bytes=0;
+            try
+            {
+                if(!WTSQuerySessionInformation(IntPtr.Zero,sessionId,WTS_INFO_CLASS.WTSConnectState,out buffer,out bytes)||buffer==IntPtr.Zero)return false;
+                var state=(WTS_CONNECTSTATE_CLASS)Marshal.ReadInt32(buffer);
+                return state!=WTS_CONNECTSTATE_CLASS.WTSActive;
+            }
+            finally{if(buffer!=IntPtr.Zero)WTSFreeMemory(buffer);}
+        }
+        catch{return false;}
+    }
 
     void WriteAlert(string key,string title,string message)
     {
@@ -136,4 +173,13 @@ public sealed class RemoteControlWorker : BackgroundService
         catch(Exception ex){_log.LogWarning(ex,"[ALERT UI] request failed key={Key}",key);}
     }
     static async Task Telegram(LocalConfig c,string text,CancellationToken ct){if(string.IsNullOrWhiteSpace(c.TelegramBotToken)||string.IsNullOrWhiteSpace(c.TelegramChatId))return;using var client=new HttpClient();await client.PostAsJsonAsync($"https://api.telegram.org/bot{c.TelegramBotToken}/sendMessage",new{chat_id=c.TelegramChatId,text},ct);}
+
+    [DllImport("kernel32.dll")]
+    static extern uint WTSGetActiveConsoleSessionId();
+    [DllImport("Wtsapi32.dll",SetLastError=true)]
+    static extern bool WTSQuerySessionInformation(IntPtr hServer,uint sessionId,WTS_INFO_CLASS infoClass,out IntPtr ppBuffer,out uint pBytesReturned);
+    [DllImport("Wtsapi32.dll")]
+    static extern void WTSFreeMemory(IntPtr memory);
+    enum WTS_INFO_CLASS{WTSConnectState=8}
+    enum WTS_CONNECTSTATE_CLASS{WTSActive,WTSConnected,WTSConnectQuery,WTSShadow,WTSDisconnected,WTSIdle,WTSListen,WTSReset,WTSDown,WTSInit}
 }
