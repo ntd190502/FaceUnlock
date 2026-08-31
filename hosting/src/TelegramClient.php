@@ -46,35 +46,46 @@ final class TelegramClient {
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json; charset=utf-8'],
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 12,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT => 10,
         ]);
 
-        $body = curl_exec($ch);
-        $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $curlError = curl_error($ch);
+        $res = curl_exec($ch);
+        $err = curl_error($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($body === false) {
-            throw new RuntimeException('Telegram network error: ' . $curlError);
+        if ($res === false) {
+            throw new RuntimeException('Telegram cURL error: ' . $err);
+        }
+        $data = json_decode((string)$res, true);
+        if ($code !== 200 || !is_array($data) || empty($data['ok'])) {
+            throw new RuntimeException('Telegram API error (' . $code . '): ' . (string)$res);
         }
 
-        $decoded = json_decode($body, true);
-        if ($status < 200 || $status >= 300 || !is_array($decoded) || empty($decoded['ok'])) {
-            $description = is_array($decoded) ? (string)($decoded['description'] ?? 'Telegram API error') : 'Invalid Telegram response';
-            throw new RuntimeException('Telegram HTTP ' . $status . ': ' . $description);
-        }
-
-        return [
-            'ok' => true,
-            'message_id' => $decoded['result']['message_id'] ?? null,
-        ];
+        return $data;
     }
+
     public function sendAdminTest(): array {
-        if ($this->botToken === '' || $this->chatId === '') throw new RuntimeException('Telegram is not configured');
-        $url='https://api.telegram.org/bot'.$this->botToken.'/sendMessage';$ch=curl_init($url);if($ch===false)throw new RuntimeException('Could not initialize cURL');
-        curl_setopt_array($ch,[CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>json_encode(['chat_id'=>$this->chatId,'text'=>'FaceUnlock Admin test notification']),CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>12,CURLOPT_HTTPHEADER=>['Content-Type: application/json']]);$body=curl_exec($ch);$status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);curl_close($ch);if($body===false||$status<200||$status>=300)throw new RuntimeException('Telegram test failed');return ['ok'=>true];
+        if ($this->botToken === '' || $this->chatId === '') {
+            throw new RuntimeException('Telegram bot_token/chat_id is not configured');
+        }
+        $url = 'https://api.telegram.org/bot' . $this->botToken . '/sendMessage';
+        $ch = curl_init($url);
+        if ($ch === false) throw new RuntimeException('Could not initialize cURL');
+        $payload = ['chat_id' => $this->chatId, 'text' => "✅ FaceUnlock: Telegram notification test successful.", 'disable_web_page_preview' => true];
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json; charset=utf-8'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        $res = curl_exec($ch);
+        curl_close($ch);
+        return json_decode((string)$res, true) ?: [];
     }
 }
