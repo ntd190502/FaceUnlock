@@ -20,13 +20,16 @@ check(strlen(ApprovalLink::hashToken($token)) === 64, 'only a SHA-256 token hash
 $approvalUrl = ApprovalLink::buildUrl('https://example.com/faceunlock/', $token);
 check($approvalUrl === 'https://example.com/faceunlock/u/' . $token, 'approval URL uses base_url and /u/<token>');
 
-$httpRejected = false;
+$httpApprovalUrl = ApprovalLink::buildUrl('http://13.215.208.0:8084', $token);
+check($httpApprovalUrl === 'http://13.215.208.0:8084/u/' . $token, 'HTTP approval URL is supported');
+
+$ftpRejected = false;
 try {
-    ApprovalLink::buildUrl('http://example.com', $token);
+    ApprovalLink::buildUrl('ftp://example.com', $token);
 } catch (RuntimeException) {
-    $httpRejected = true;
+    $ftpRejected = true;
 }
-check($httpRejected, 'HTTP approval URL is rejected');
+check($ftpRejected, 'FTP/invalid scheme approval URL is rejected');
 
 $telegram = new TelegramClient(['bot_token' => 'test', 'chat_id' => '123']);
 $payload = $telegram->buildUnlockNotification('DESKTOP-PC', $approvalUrl, time() + 90);

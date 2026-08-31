@@ -38,7 +38,7 @@ struct AppConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        serverURL = try container.decodeIfPresent(String.self, forKey: .serverURL) ?? "https://face.bobabliss.io.vn"
+        serverURL = try container.decodeIfPresent(String.self, forKey: .serverURL) ?? "http://13.215.208.0:8084"
         pcID = try container.decodeIfPresent(String.self, forKey: .pcID)
         pcName = try container.decodeIfPresent(String.self, forKey: .pcName)
         pcPublicKeyPEM = try container.decodeIfPresent(String.self, forKey: .pcPublicKeyPEM)
@@ -71,7 +71,7 @@ struct AppConfig: Codable {
         get {
             guard let data = UserDefaults.standard.data(forKey: "app_config"),
                   let cfg = try? JSONDecoder().decode(AppConfig.self, from: data)
-            else { return AppConfig(serverURL: "https://face.bobabliss.io.vn") }
+            else { return AppConfig(serverURL: "http://13.215.208.0:8084") }
 
             if let object = try? JSONSerialization.jsonObject(with: data),
                let dictionary = object as? [String: Any],

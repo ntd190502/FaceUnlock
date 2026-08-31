@@ -11,8 +11,9 @@ final class TelegramClient {
     }
 
     public function buildUnlockNotification(string $pcName, string $approvalUrl, int $expiresAt): array {
-        if (filter_var($approvalUrl, FILTER_VALIDATE_URL) === false || strtolower((string)parse_url($approvalUrl, PHP_URL_SCHEME)) !== 'https') {
-            throw new InvalidArgumentException('Telegram approval URL must use HTTPS');
+        $scheme = strtolower((string)parse_url($approvalUrl, PHP_URL_SCHEME));
+        if (filter_var($approvalUrl, FILTER_VALIDATE_URL) === false || !in_array($scheme, ['http', 'https'], true)) {
+            throw new InvalidArgumentException('Telegram approval URL must use HTTP or HTTPS');
         }
 
         $remaining = max(0, $expiresAt - time());

@@ -21,7 +21,7 @@ public sealed record LocalAuthRequest(int version,string command,string request_
 public sealed record LocalAuthResponse(int version,string request_id,string status,string? message=null,long? expires_at=null,string? service_version=null,string? user_sid=null,int? session_id=null);
 public static class LocalAuthStatus { public const string Ok="ok",Pending="pending",WaitingConnectivity="waiting_connectivity",InternetRestored="internet_restored",Approved="approved",Reserved="reserved",Consumed="consumed",Released="released",Rejected="rejected",Timeout="timeout",Error="error",Cancelled="cancelled",NotPaired="not_paired",Busy="busy",Expired="expired",NotFound="not_found"; }
 public sealed class LocalConfig {
- public string ServerUrl { get; set; }="https://face.bobabliss.io.vn"; public string PcId { get; set; }=Guid.NewGuid().ToString("N"); public string PcName { get; set; }=Environment.MachineName;
+ public string ServerUrl { get; set; }="http://13.215.208.0:8084"; public string PcId { get; set; }=Guid.NewGuid().ToString("N"); public string PcName { get; set; }=Environment.MachineName;
  public string? PcToken { get; set; } public string? PairId { get; set; } public string? DeviceId { get; set; } public string? DevicePublicKeyPem { get; set; } public List<PairedDevice> Devices { get; set; }=new();
  public bool TemperatureAlertEnabled { get; set; }=true; public double TemperatureAlertCelsius { get; set; }=80;
  public bool CpuLoadAlertEnabled { get; set; }=true; public double CpuLoadAlertPercent { get; set; }=90; public int CpuLoadAlertDurationSeconds { get; set; }=30;

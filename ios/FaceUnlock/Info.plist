@@ -19,4 +19,9 @@
 <key>CFBundleURLSchemes</key><array><string>faceunlock</string></array>
 </dict></array>
 <key>UIBackgroundModes</key><array><string>bluetooth-peripheral</string></array>
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+</dict>
 </dict></plist>

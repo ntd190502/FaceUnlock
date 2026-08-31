@@ -23,16 +23,17 @@ final class ApprovalLink {
         }
 
         $parts = parse_url($baseUrl);
+        $scheme = strtolower((string)($parts['scheme'] ?? ''));
         if (
             !is_array($parts) ||
-            strtolower((string)($parts['scheme'] ?? '')) !== 'https' ||
+            !in_array($scheme, ['http', 'https'], true) ||
             empty($parts['host']) ||
             isset($parts['user']) ||
             isset($parts['pass']) ||
             isset($parts['query']) ||
             isset($parts['fragment'])
         ) {
-            throw new RuntimeException('base_url must be an HTTPS origin or HTTPS path without credentials, query, or fragment');
+            throw new RuntimeException('base_url must be an HTTP/HTTPS origin or path without credentials, query, or fragment');
         }
 
         return $baseUrl . '/u/' . rawurlencode($token);
