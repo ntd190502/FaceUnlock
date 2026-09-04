@@ -60,7 +60,18 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             $id=bin2hex(random_bytes(16));$stored=$id.'.bin';$target=$dir.'/'.$stored;
             if(!move_uploaded_file($tmp,$target)){$errors[]='Could not move '.$safe.' into transfer storage.';continue;}
             $size=(int)(filesize($target)?:0);$mime=detectMime($target);$device=$mode==='iphone'?($_SESSION['transfer_device']??null):null;
-            try{$db->exec("INSERT INTO transfer_files(id,pc_id,device_id,direction,original_name,stored_name,size_bytes,mime_type)VALUES(?,?,?,?,?,?,?,?)",[$id,$pc,$device,$direction,$safe,$stored,$size,$mime]);$saved++;}
+            try{
+                $db->exec("INSERT INTO transfer_files(id,pc_id,device_id,direction,original_name,stored_name,size_bytes,mime_type)VALUES(?,?,?,?,?,?,?,?)",[$id,$pc,$device,$direction,$safe,$stored,$size,$mime]);
+                if($direction==='IPHONE_TO_PC'){
+                    $targetDev=$device?:(string)($db->one("SELECT device_id FROM pc_device_pairings WHERE pc_id=? AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1",[$pc])['device_id']??'');
+                    if($targetDev!==''){
+                        $cmdId=bin2hex(random_bytes(16));
+                        $cmdPayload=json_encode(['file_id'=>$id,'name'=>$safe,'size'=>$size,'mime'=>$mime],JSON_UNESCAPED_SLASHES);
+                        $db->exec("INSERT INTO remote_commands(id,pc_id,device_id,command_type,payload,expires_at)VALUES(?,?,?,'fetch_file',?,?)",[$cmdId,$pc,$targetDev,$cmdPayload,time()+300]);
+                    }
+                }
+                $saved++;
+            }
             catch(Throwable $e){@unlink($target);$errors[]='Database could not register '.$safe.'.';}
         }
         if($saved>0)$message=$saved.' file(s) uploaded successfully.';

@@ -21,7 +21,7 @@ public sealed class RemoteControlWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
-        await Task.WhenAll(RemoteLoop(stop), FileLoop(stop), MonitorLoop(stop));
+        await Task.WhenAll(RemoteLoop(stop), MonitorLoop(stop));
     }
 
     async Task RemoteLoop(CancellationToken stop)
@@ -45,21 +45,6 @@ public sealed class RemoteControlWorker : BackgroundService
         }
     }
 
-    async Task FileLoop(CancellationToken stop)
-    {
-        while(!stop.IsCancellationRequested)
-        {
-            try
-            {
-                var cfg=_store.Load();
-                if(!string.IsNullOrWhiteSpace(cfg.PcToken)) await ReceiveHostedFile(new ApiClient(cfg),stop);
-            }
-            catch(OperationCanceledException) when(stop.IsCancellationRequested){break;}
-            catch(Exception ex){_log.LogWarning(ex,"[HOSTED FILE FAILED] {Message}",ex.Message);WriteAlert("file","File transfer failed",ex.Message);}
-            await Task.Delay(2500,stop);
-        }
-    }
-
     async Task MonitorLoop(CancellationToken stop)
     {
         while(!stop.IsCancellationRequested)
@@ -79,6 +64,10 @@ public sealed class RemoteControlWorker : BackgroundService
                 await Task.Delay(1000,ct);
                 result=ReadStatus();
             }
+            else if(command.type=="fetch_file")
+            {
+                result=await FetchFile(api,command,ct);
+            }
             else result=command.type switch
             {
                 "signout"=>Power("/l"),
@@ -95,11 +84,47 @@ public sealed class RemoteControlWorker : BackgroundService
         }
     }
 
-    async Task ReceiveHostedFile(ApiClient api,CancellationToken ct)
+    async Task<object> FetchFile(ApiClient api,RemoteCommand command,CancellationToken ct)
     {
-        var pending=await api.GetPendingHostedFileAsync(ct);if(!pending.pending||pending.file==null)return;
-        var root=UserDownloadsFaceUnlock();Directory.CreateDirectory(root);var name=Path.GetFileName(pending.file.name);var path=UniquePath(root,name);
-        await api.DownloadHostedFileAsync(pending.file,path,ct);_log.LogInformation("[HOSTED FILE RECEIVED] id={Id} path={Path}",pending.file.id,path);
+        try
+        {
+            string? fileId=null;
+            string? fileName=null;
+            if(command.payload!=null)
+            {
+                if(command.payload.TryGetValue("file_id",out var fidObj))
+                    fileId=fidObj is System.Text.Json.JsonElement jeFid?jeFid.GetString():fidObj?.ToString();
+                if(command.payload.TryGetValue("name",out var fnObj))
+                    fileName=fnObj is System.Text.Json.JsonElement jeFn?jeFn.GetString():fnObj?.ToString();
+            }
+
+            HostedTransferFile? file=null;
+            if(!string.IsNullOrWhiteSpace(fileId)&&!string.IsNullOrWhiteSpace(fileName))
+            {
+                file=new HostedTransferFile(fileId,fileName,0,null);
+            }
+            else
+            {
+                var pending=await api.GetPendingHostedFileAsync(ct);
+                if(pending.pending&&pending.file!=null) file=pending.file;
+            }
+
+            if(file==null) throw new InvalidOperationException("No file available for transfer");
+
+            var root=UserDownloadsFaceUnlock();
+            Directory.CreateDirectory(root);
+            var name=Path.GetFileName(file.name);
+            var path=UniquePath(root,name);
+            await api.DownloadHostedFileAsync(file,path,ct);
+            _log.LogInformation("[HOSTED FILE RECEIVED] id={Id} path={Path}",file.id,path);
+            return new{downloaded=true,path};
+        }
+        catch(Exception ex)
+        {
+            _log.LogWarning(ex,"[HOSTED FILE FAILED] {Message}",ex.Message);
+            WriteAlert("file","File transfer failed",ex.Message);
+            throw;
+        }
     }
 
     static string UserDownloadsFaceUnlock(){try{using var s=new ManagementObjectSearcher("SELECT UserName FROM Win32_ComputerSystem");var user=s.Get().Cast<ManagementObject>().Select(x=>x["UserName"]?.ToString()).FirstOrDefault(x=>!string.IsNullOrWhiteSpace(x));var shortName=user?.Split('\\').LastOrDefault();if(!string.IsNullOrWhiteSpace(shortName))return Path.Combine("C:\\Users",shortName,"Downloads","FaceUnlock");}catch{}return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"FaceUnlock","Incoming");}
