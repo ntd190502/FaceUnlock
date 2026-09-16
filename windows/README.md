@@ -1,35 +1,57 @@
-# Windows components
+﻿# FaceUnlock Windows Solution
 
-- `FaceUnlock.Core`: API, crypto, config, BLE.
-- `FaceUnlock.Agent`: WPF pairing/test UI.
-- `FaceUnlock.Service`: Windows Service, online/BLE broker, and Phase F.2 gate authority.
-- `FaceUnlock.Shell`: post-logon Shell Gate with input guard.
+Native Windows .NET 8 solution implementing the **Post-Logon Shell Gate**, background SYSTEM service, pairing agent, and BLE authentication client.
 
-The retired Credential Provider, Phase E AuthPackage, CompanionCDF reference, and
-their harnesses are not part of the source or installer. `Cleanup-PhaseE.ps1` is
-retained only for safe upgrade migration from machines that previously installed them.
+---
 
-Online and BLE are transports for the same logical Windows request. BLE retries
-rotate cryptographic sessions without creating another Face ID ceremony. Bluetooth
-auto-enable uses per-request leases: the last owned lease restores an initially-OFF
-radio, while an initially-ON radio remains untouched.
+## Component Overview
 
-## Shell Gate security boundary
+| Project | Role | Runtime Context |
+| :--- | :--- | :--- |
+| `FaceUnlock.Core` | Common library; DPAPI token storage, ECDSA P-256 validation, BLE GATT framing, and IPC models. | Shared DLL |
+| `FaceUnlock.Service` | SYSTEM background service; owns session gate authority, watchdog, and hardware BLE lease manager. | `NT AUTHORITY\SYSTEM` |
+| `FaceUnlock.Shell` | Post-Logon Shell Gate (`FaceUnlockShell.exe`); blocks desktop entry and captures escape shortcuts before Explorer. | Interactive Session |
+| `FaceUnlock.Agent` | User-facing WPF desktop interface; handles QR pairing, diagnostics, and testing controls. | Interactive Session |
+| `FaceUnlock.AlertUI` | Standalone on-demand interactive dialog; spawned in active session only when a critical alert occurs. | Interactive Session |
 
-FaceUnlock Phase F is a post-logon Shell Gate. While approval is pending, a scoped
-low-level keyboard guard blocks common user-mode escape shortcuts and the window
-rejects close requests. The guard is removed after an approved grant is consumed,
-before Explorer starts, and during application shutdown.
+---
 
-Ctrl+Alt+Del is the Windows Secure Attention Sequence and cannot be blocked by a
-user-mode application. Phase F.2 keeps gate authority in the SYSTEM service: a
-killed locked Shell is restarted, and Explorer started from Task Manager before a
-bound grant is consumed is terminated in that same session. FaceUnlock does not
-patch Winlogon/LSA, disable Windows security UI, or install persistent keyboard
-mappings or recovery policies. WinRE and Safe Mode remain unchanged.
+## Post-Logon Shell Gate Architecture
 
-## Shell visual previews
+FaceUnlock implements a true Post-Logon Shell Gate:
+- **Pre-Explorer Gatekeeper**: The Windows shell is set to `FaceUnlockShell.exe`. The Windows desktop (`explorer.exe`) is never launched until a cryptographic grant is consumed.
+- **IPC Authority & Watchdog**: `FaceUnlock.Service.exe` actively monitors the shell process. If an unauthorized user attempts to kill the shell or spawn `explorer.exe` via Task Manager, the Service terminates Explorer and relaunches the lock gate.
+- **Escape Shortcut Interception**: Low-level keyboard guards intercept common exit shortcuts (Alt+Tab, Win keys, Alt+F4) while locked.
+- **Safe Mode Immunity**: Windows Safe Mode and WinRE emergency recovery environments remain unaffected. An automated recovery script (`FaceUnlock-Shell-Recovery.ps1`) is provided in the installation root to revert to standard Windows Explorer at any time.
 
-Run `FaceUnlockShell.exe --test --test-state <waiting|approval|bluetooth|verifying|approved|error>`
-to review the lock-screen presentation without starting the approval engine or granting
-desktop access. The preview flag is ignored outside `--test` mode.
+---
+
+## Bluetooth Low Energy (BLE) Lease Management
+
+- **Zero Radio Footprint**: If Bluetooth was initially OFF before a lock request, FaceUnlock temporarily activates it for authorization and safely turns it back OFF when the lease completes.
+- **Multi-Transport Deduplication**: Online (Telegram) and offline (BLE) transports share the same cryptographic logical request ID, preventing duplicate Face ID prompts on the phone.
+
+---
+
+## Building Locally
+
+To build all Windows components locally using .NET 8 SDK:
+
+```powershell
+dotnet build windows/FaceUnlock.Core/FaceUnlock.Core.csproj -c Release
+dotnet build windows/FaceUnlock.Service/FaceUnlock.Service.csproj -c Release
+dotnet build windows/FaceUnlock.Agent/FaceUnlock.Agent.csproj -c Release
+dotnet build windows/FaceUnlock.Shell/FaceUnlock.Shell.csproj -c Release
+dotnet build windows/FaceUnlock.AlertUI/FaceUnlock.AlertUI.csproj -c Release
+```
+
+Or run the automated build script:
+```powershell
+powershell -ExecutionPolicy Bypass -File windows/scripts/build.ps1
+```
+
+To run the complete unit test suite:
+```powershell
+dotnet run --project windows/FaceUnlock.UnitTests/FaceUnlock.UnitTests.csproj
+dotnet run --project windows/FaceUnlock.BleFrameSelfTest/FaceUnlock.BleFrameSelfTest.csproj
+```

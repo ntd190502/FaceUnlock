@@ -1,30 +1,37 @@
-# FaceUnlock shared-hosting backend
+﻿# FaceUnlock Shared-Hosting Backend (PHP 8 + MySQL)
 
-See `../docs/INSTALL_HOSTING.md`.
+Lightweight REST API backend for **FaceUnlock**, managing pairing ceremonies, device tokens, and short-lived online unlock requests via Telegram Bot notifications.
 
-Public document root should be `hosting/public`. The backend uses only standard PHP extensions commonly available on shared hosting: PDO MySQL, cURL, OpenSSL.
+---
 
-Telegram notifications contain a plain `base_url/u/<opaque-token>` HTTPS link. The
-database stores only the token hash, and no Telegram inline keyboard or callback
-webhook is required. Outbound HTTPS/443 access to the Telegram Bot API is required;
-BLE fallback is unaffected if notification delivery fails.
+## Core Features
 
-## Hosting V2 upgrade
+- **Lean Authentication API**: Exclusively provides pairing (`/v1/pair/*`) and unlock approval (`/v1/unlock/*`) routes. Redundant remote controls and file hosting modules have been fully eliminated.
+- **Telegram Bot Integration**: Generates single-use, short-lived HTTPS links (`base_url/u/<token>`) and dispatches them via standard Telegram Bot API.
+- **Hardware-Enforced Security**: The server only verifies and logs cryptographic signatures; it never stores Windows PINs, passwords, or device private keys.
+- **Zero Heavy Dependencies**: Runs on standard shared hosting environments with PHP 8.1+ and MySQL/MariaDB (requires `pdo_mysql`, `curl`, `openssl`).
 
-Back up the database first. Existing installations must run `php hosting/scripts/migrate.php`
-from a trusted CLI account. The runner records ordered versions in `schema_migrations`,
-migrates legacy `devices.pc_id` relations into `pc_device_pairings`, verifies the count,
-and preserves old unlock history as logical requests. It fails rather than silently
-continuing on a pairing-count mismatch.
+---
 
-New installations import `schema.sql`. V2 creates one logical `unlock_requests` row
-per PC attempt and one candidate per active pairing; a conditional update makes the
-first valid approval the only winner. The opaque Telegram URL is only a locator.
+## Installation & Deployment
 
-For shared hosting, core operation does not require cron. Run `php hosting/scripts/migrate.php`
-on deploy and optionally invoke your cleanup command hourly; lazy expiration is also safe.
-`GET /health` is intentionally minimal. `GET /admin` requires a bearer value whose SHA-256
-is configured as `admin.token_hash`; it never exposes secrets. Browser users open
-`/admin/login` and enter the raw token once; the server stores only a secure, expiring
-session. Generate a hash with `php -r "echo hash('sha256','YOUR_LONG_RANDOM_TOKEN'), PHP_EOL;"`
-or PowerShell: `[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('YOUR_LONG_RANDOM_TOKEN'))).ToLower()`.
+1. **Document Root**: Configure web server (Apache/Nginx/aaPanel) with root pointed to `hosting/public/`.
+2. **Database Setup**: Import `hosting/schema.sql` into your MySQL/MariaDB database.
+3. **Configuration**: Copy `hosting/config.example.php` to `hosting/config.php` and configure:
+   - Database credentials (`dsn`, `user`, `pass`)
+   - `base_url`: Must match your publicly accessible domain or IP (e.g. `http://13.215.208.0:8084`)
+   - Telegram credentials (`bot_token`, `chat_id`)
+4. **Permissions**: Ensure the web server user (`www`) has read access to `src/` and read/write access to `storage/`.
+
+---
+
+## API Endpoints Overview
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/v1/pair/start` | Windows Agent initiates pairing; generates short-lived pairing code & QR payload. |
+| `POST` | `/v1/pair/complete` | iPhone registers device public key with pairing code. |
+| `POST` | `/v1/unlock/request` | Windows initiates an online unlock request for the paired device. |
+| `GET` | `/v1/unlock/status/{session}` | Windows polls for biometric authorization state. |
+| `POST` | `/v1/unlock/approve/{session}` | iPhone submits Face ID cryptographic signature to approve desktop unlock. |
+| `GET` | `/u/{token}` | Short redirect endpoint mapping opaque Telegram link to the FaceUnlock app. |
